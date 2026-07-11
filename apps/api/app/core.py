@@ -753,7 +753,7 @@ async def reschedule_appointment(
                 WHERE a.id = %s
                   AND a.clinic_id = %s
                   AND a.status IN ('pending', 'confirmed')
-                FOR UPDATE
+                FOR UPDATE OF a
                 """,
                 (appointment_id, current_clinic),
             )
@@ -774,11 +774,7 @@ async def reschedule_appointment(
                 exclude_appointment_id=appointment_id,
             )
 
-            if not appointment["google_calendar_event_id"]:
-                raise HTTPException(
-                    status_code=status.HTTP_409_CONFLICT,
-                    detail="Ce rendez-vous n’est pas synchronisé à Google Calendar.",
-                )
+            
 
             event_body = make_event_body(
                 patient_name=appointment["patient_name"],
@@ -792,28 +788,48 @@ async def reschedule_appointment(
             )
 
             try:
-                event = await update_event(
-                    appointment["calendar_id"],
-                    appointment["google_calendar_event_id"],
-                    event_body,
-                )
-            except (CalendarConfigurationError, CalendarOperationError) as exc:
+                if appointment["google_calendar_event_id"]:
+                    event = await update_event(
+                        appointment["calendar_id"],
+                        appointment["google_calendar_event_id"],
+                        event_body,
+                    )
+                    google_event_id = appointment["google_calendar_event_id"]
+                else:
+                    event = await create_event(
+                        appointment["calendar_id"],
+                        event_body,
+                    )
+                    google_event_id = event["id"]
+
+            except (
+                CalendarConfigurationError,
+                CalendarOperationError,
+            ) as exc:
                 await conn.rollback()
                 raise HTTPException(
                     status_code=status.HTTP_502_BAD_GATEWAY,
                     detail=str(exc),
                 ) from exc
-
+     
+               
+ 
             await cur.execute(
                 """
                 UPDATE appointments
-                SET start_at = %s,
-                    end_at = %s,
-                    updated_at = NOW()
-                WHERE id = %s
-                RETURNING *
+SET start_at = %s,
+    end_at = %s,
+    google_calendar_event_id = %s,
+    updated_at = NOW()
+WHERE id = %s
+RETURNING *
                 """,
-                (payload.start_at, end_at, appointment_id),
+                (
+    payload.start_at,
+    end_at,
+    google_event_id,
+    appointment_id,
+),
             )
             result = await cur.fetchone()
             await conn.commit()
@@ -845,7 +861,7 @@ async def cancel_appointment(
                 LEFT JOIN practitioners pr ON pr.id = a.practitioner_id
                 JOIN clinics c ON c.id = a.clinic_id
                 WHERE a.id = %s AND a.clinic_id = %s
-                FOR UPDATE
+                FOR UPDATE OF a
                 """,
                 (appointment_id, current_clinic),
             )
