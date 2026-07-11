@@ -1,0 +1,5 @@
+fastapi[standard]>=0.115,<1
+psycopg[binary,pool]>=3.2,<4
+pydantic-settings>=2.7,<3
+google-api-python-client>=2.160,<3
+google-auth>=2.38,<3

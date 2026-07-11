@@ -1,0 +1,3 @@
+import { PageHeader } from "@/components/page-header";
+import { getTreatments } from "@/lib/api";
+export default async function Page(){const items=await getTreatments();return <><PageHeader title="Soins" description="Tarifs, durées et prestations."/><section className="card-grid">{items.map(t=><article className="treatment-card" key={t.id}><div className="panel-heading"><strong>{t.name}</strong><span className="badge success">Actif</span></div><p>{t.description??"Aucune description"}</p><div className="treatment-meta"><span>{t.duration_minutes} minutes</span><strong>{Number(t.price).toLocaleString("fr-DZ")} DA</strong></div></article>)}</section></>}
