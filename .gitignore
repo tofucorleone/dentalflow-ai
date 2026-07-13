@@ -32,3 +32,7 @@ Thumbs.db
 *.log
 backups/
 *.sql.gz
+storage/patients/*
+storage/temp/*
+!storage/patients/.gitkeep
+!storage/temp/.gitkeep

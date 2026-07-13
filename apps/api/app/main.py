@@ -1,5 +1,5 @@
 from contextlib import asynccontextmanager
-
+from app.documents import router as documents_router
 from fastapi import FastAPI
 
 from app.core import router as core_router
@@ -37,3 +37,4 @@ async def health() -> dict:
 app.include_router(core_router)
 app.include_router(patient360_router)
 app.include_router(auth_router)
+app.include_router(documents_router)

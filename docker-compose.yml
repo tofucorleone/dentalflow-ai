@@ -44,6 +44,7 @@ services:
     ports:
       - "${API_PORT:-8001}:8000"
     volumes:
+      - ./storage:/app/storage
       - ./secrets/google/service-account.json:/run/secrets/google-service-account.json:ro
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"]
