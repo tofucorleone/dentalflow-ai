@@ -39,6 +39,14 @@ class PatientIn(BaseModel):
     email: str | None = Field(default=None, max_length=255)
     administrative_notes: str | None = Field(default=None, max_length=2000)
 
+class PatientPatch(BaseModel):
+    phone: str | None = Field(default=None, min_length=6, max_length=40)
+    full_name: str | None = Field(default=None, max_length=150)
+    email: str | None = Field(default=None, max_length=255)
+    administrative_notes: str | None = Field(
+        default=None,
+        max_length=2000,
+    )
 
 class AppointmentIn(BaseModel):
     patient_id: UUID

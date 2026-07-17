@@ -1,7 +1,8 @@
 from contextlib import asynccontextmanager
 from app.documents import router as documents_router
+from app.ai.router import router as ai_router
 from fastapi import FastAPI
-
+from app.document_ai import router as document_ai_router
 from app.core import router as core_router
 from app.patient360 import router as patient360_router
 from app.db import close_pool, connection, open_pool
@@ -38,3 +39,5 @@ app.include_router(core_router)
 app.include_router(patient360_router)
 app.include_router(auth_router)
 app.include_router(documents_router)
+app.include_router(ai_router)
+app.include_router(document_ai_router)

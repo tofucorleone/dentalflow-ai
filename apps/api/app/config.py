@@ -12,6 +12,9 @@ class Settings(BaseSettings):
     google_calendar_enabled: bool = False
     google_service_account_file: str = "/run/secrets/google-service-account.json"
 
+    openai_api_key: str | None = None
+
+
     model_config = SettingsConfigDict(
         env_file=".env",
         env_file_encoding="utf-8",

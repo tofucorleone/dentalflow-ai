@@ -2,7 +2,12 @@
 
 import { useMemo, useState, useTransition } from "react";
 import { CalendarDays, ChevronLeft, ChevronRight, Trash2 } from "lucide-react";
-import type { Appointment } from "@/lib/api";
+import type {
+  Appointment,
+  Patient,
+  Practitioner,
+  Treatment,
+} from "@/lib/api";
 
 const START_HOUR = 8;
 const END_HOUR = 20;
@@ -12,6 +17,9 @@ const DAY_COLUMN_WIDTH = 150;
 
 type Props = {
   initialAppointments: Appointment[];
+  patients: Patient[];
+  practitioners: Practitioner[];
+  treatments: Treatment[];
 };
 
 type DragPayload = {
@@ -114,11 +122,28 @@ function errorMessage(body: unknown): string {
   return "L'opération a échoué.";
 }
 
-export function WeekCalendar({ initialAppointments }: Props) {
+export function WeekCalendar({
+  initialAppointments,
+  patients,
+  practitioners,
+  treatments,
+}: Props) {
   const [appointments, setAppointments] =
     useState<Appointment[]>(initialAppointments);
   const [weekStart, setWeekStart] = useState(() => startOfWeek(new Date()));
   const [message, setMessage] = useState<string | null>(null);
+  const [selectedSlot, setSelectedSlot] = useState<{
+    dateKey: string;
+    hour: number;
+    minute: number;
+  } | null>(null);
+
+  const [selectedPatientId, setSelectedPatientId] = useState("");
+  const [selectedPractitionerId, setSelectedPractitionerId] =
+    useState("");
+  const [selectedTreatmentId, setSelectedTreatmentId] =
+    useState("");
+
   const [isPending, startTransition] = useTransition();
 
   const days = useMemo(
@@ -257,6 +282,63 @@ export function WeekCalendar({ initialAppointments }: Props) {
     });
   }
 
+
+  function createAppointment(
+    event: React.FormEvent<HTMLFormElement>,
+  ) {
+    event.preventDefault();
+
+    if (!selectedSlot || !selectedPatientId) {
+      return;
+    }
+
+    const startAt = toOffsetIso(
+      selectedSlot.dateKey,
+      selectedSlot.hour,
+      selectedSlot.minute,
+    );
+
+    startTransition(async () => {
+      const response = await fetch(
+        "/api/appointments",
+        {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({
+            patient_id: selectedPatientId,
+            practitioner_id:
+              selectedPractitionerId || null,
+            treatment_id:
+              selectedTreatmentId || null,
+            channel: "dashboard",
+            status: "confirmed",
+            start_at: startAt,
+            end_at: null,
+            notes: null,
+          }),
+        },
+      );
+
+      const body = await response.json();
+
+      if (!response.ok) {
+        setMessage(errorMessage(body));
+        return;
+      }
+
+      setAppointments((items) => [...items, body]);
+      setSelectedSlot(null);
+      setSelectedPatientId("");
+      setSelectedPractitionerId("");
+      setSelectedTreatmentId("");
+      setMessage(
+        "Rendez-vous créé et Google Calendar synchronisé.",
+      );
+    });
+  }
+
   return (
     <section className="calendar-shell">
       <div className="calendar-toolbar">
@@ -312,6 +394,76 @@ export function WeekCalendar({ initialAppointments }: Props) {
         </div>
       )}
 
+      {selectedSlot && (
+        <form
+          className="calendar-message success-message"
+          onSubmit={createAppointment}
+        >
+          <strong>
+            Nouveau rendez-vous — {selectedSlot.dateKey} à{" "}
+            {String(selectedSlot.hour).padStart(2, "0")}:
+            {String(selectedSlot.minute).padStart(2, "0")}
+          </strong>
+
+          <select
+            value={selectedPatientId}
+            onChange={(event) =>
+              setSelectedPatientId(event.target.value)
+            }
+            required
+          >
+            <option value="">Choisir un patient</option>
+            {patients.map((patient) => (
+              <option key={patient.id} value={patient.id}>
+                {patient.full_name ?? patient.phone}
+              </option>
+            ))}
+          </select>
+
+          <select
+            value={selectedTreatmentId}
+            onChange={(event) =>
+              setSelectedTreatmentId(event.target.value)
+            }
+          >
+            <option value="">Consultation générale</option>
+            {treatments.map((treatment) => (
+              <option key={treatment.id} value={treatment.id}>
+                {treatment.name}
+              </option>
+            ))}
+          </select>
+
+          <select
+            value={selectedPractitionerId}
+            onChange={(event) =>
+              setSelectedPractitionerId(event.target.value)
+            }
+          >
+            <option value="">Praticien automatique</option>
+            {practitioners.map((practitioner) => (
+              <option
+                key={practitioner.id}
+                value={practitioner.id}
+              >
+                {practitioner.full_name}
+              </option>
+            ))}
+          </select>
+
+          <button type="submit">
+            Créer le rendez-vous
+          </button>
+
+          <button
+            type="button"
+            onClick={() => setSelectedSlot(null)}
+          >
+            Annuler
+          </button>
+        </form>
+      )}
+
       <div className="calendar-scroll">
         <div
           className="calendar-grid"
@@ -359,8 +511,15 @@ export function WeekCalendar({ initialAppointments }: Props) {
             return (
               <div className="day-column" key={dateKey}>
                 {slots.map((slot) => (
-                  <div
+                  <button
+                    type="button"
                     className="calendar-slot"
+                    aria-label={`Créer un rendez-vous le ${dateKey} à ${String(
+                      slot.hour,
+                    ).padStart(2, "0")}:${String(slot.minute).padStart(
+                      2,
+                      "0",
+                    )}`}
                     key={`${dateKey}-${slot.hour}-${slot.minute}`}
                     style={{ height: SLOT_HEIGHT }}
                     onDragOver={(event) => {
@@ -374,6 +533,13 @@ export function WeekCalendar({ initialAppointments }: Props) {
                         slot.hour,
                         slot.minute,
                       )
+                    }
+                    onClick={() =>
+                      setSelectedSlot({
+                        dateKey,
+                        hour: slot.hour,
+                        minute: slot.minute,
+                      })
                     }
                   />
                 ))}

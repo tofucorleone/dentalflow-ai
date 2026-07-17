@@ -1,7 +1,12 @@
 from datetime import datetime, timedelta
 from uuid import UUID
 from zoneinfo import ZoneInfo
-
+from app.appointment_service import (
+    cancel_appointment_record,
+    create_appointment_record,
+    reschedule_appointment_record,
+    validate_appointment_slot,
+)
 from fastapi import APIRouter, Depends, HTTPException, status
 from psycopg.errors import UniqueViolation
 
@@ -15,14 +20,21 @@ from app.google_calendar import (
     update_event,
 )
 from app.deps import clinic_id
+from app.practitioner_service import (
+    list_practitioners as list_practitioners_service,
+)
+from app.treatment_service import list_active_treatments
 from app.schemas import (
     AppointmentIn,
     AppointmentRescheduleIn,
     AvailabilityIn,
     PatientIn,
+    PatientPatch,
     PractitionerIn,
     TreatmentIn,
     TreatmentPatch,
+    
+
 )
 
 
@@ -48,22 +60,31 @@ async def list_treatments(
     current_clinic: UUID = Depends(clinic_id),
     include_inactive: bool = False,
 ) -> list[dict]:
-    query = """
-        SELECT id, clinic_id, name, description, duration_minutes, price,
-               requires_consultation, active, created_at, updated_at
-        FROM treatments
-        WHERE clinic_id = %s
-    """
-    params: list = [current_clinic]
-
     if not include_inactive:
-        query += " AND active = TRUE"
-
-    query += " ORDER BY name"
+        return await list_active_treatments(current_clinic)
 
     async with connection() as conn:
         async with conn.cursor() as cur:
-            await cur.execute(query, params)
+            await cur.execute(
+                """
+                SELECT
+                    id,
+                    clinic_id,
+                    name,
+                    description,
+                    duration_minutes,
+                    price,
+                    requires_consultation,
+                    active,
+                    created_at,
+                    updated_at
+                FROM treatments
+                WHERE clinic_id = %s
+                ORDER BY name
+                """,
+                (current_clinic,),
+            )
+
             return await cur.fetchall()
 
 
@@ -161,20 +182,10 @@ async def list_practitioners(
     current_clinic: UUID = Depends(clinic_id),
     include_inactive: bool = False,
 ) -> list[dict]:
-    query = """
-        SELECT id, clinic_id, full_name, speciality, google_calendar_id,
-               phone, email, active, created_at, updated_at
-        FROM practitioners
-        WHERE clinic_id = %s
-    """
-    if not include_inactive:
-        query += " AND active = TRUE"
-    query += " ORDER BY full_name"
-
-    async with connection() as conn:
-        async with conn.cursor() as cur:
-            await cur.execute(query, (current_clinic,))
-            return await cur.fetchall()
+    return await list_practitioners_service(
+        clinic_id=current_clinic,
+        include_inactive=include_inactive,
+    )
 
 
 @router.post("/practitioners", tags=["Praticiens"], status_code=status.HTTP_201_CREATED)
@@ -265,6 +276,85 @@ async def upsert_patient(
             row = await cur.fetchone()
             await conn.commit()
             return row
+
+
+@router.patch("/patients/{patient_id}", tags=["Patients"])
+async def update_patient(
+    patient_id: UUID,
+    payload: PatientPatch,
+    current_clinic: UUID = Depends(clinic_id),
+) -> dict:
+    updates = payload.model_dump(exclude_unset=True)
+
+    if not updates:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Aucune modification fournie.",
+        )
+
+    allowed_fields = {
+        "phone",
+        "full_name",
+        "email",
+        "administrative_notes",
+    }
+
+    fields = []
+    values = []
+
+    for field, value in updates.items():
+        if field not in allowed_fields:
+            continue
+
+        fields.append(f"{field} = %s")
+        values.append(value)
+
+    fields.append("updated_at = NOW()")
+
+    values.extend(
+        [
+            patient_id,
+            current_clinic,
+        ]
+    )
+
+    query = f"""
+        UPDATE patients
+        SET {", ".join(fields)}
+        WHERE id = %s
+          AND clinic_id = %s
+        RETURNING
+            id,
+            clinic_id,
+            phone,
+            full_name,
+            email,
+            administrative_notes,
+            active,
+            created_at,
+            updated_at
+    """
+
+    try:
+        async with connection() as conn:
+            async with conn.cursor() as cur:
+                await cur.execute(query, values)
+                patient = await cur.fetchone()
+
+                if patient is None:
+                    raise HTTPException(
+                        status_code=status.HTTP_404_NOT_FOUND,
+                        detail="Patient introuvable.",
+                    )
+
+                await conn.commit()
+                return patient
+
+    except UniqueViolation as exc:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Ce numéro de téléphone est déjà utilisé.",
+        ) from exc
 
 
 async def _clinic_timezone(cur, current_clinic: UUID) -> str:
@@ -497,32 +587,15 @@ async def _validate_slot(
     end_at: datetime | None,
     exclude_appointment_id: UUID | None = None,
 ) -> tuple[UUID, datetime]:
-    duration_minutes = await _duration(cur, current_clinic, treatment_id)
-    resolved_end = end_at or (start_at + timedelta(minutes=duration_minutes))
-    resolved_practitioner = await _practitioner(
-        cur,
-        current_clinic,
-        practitioner_id,
-        treatment_id,
+    return await validate_appointment_slot(
+        cur=cur,
+        clinic_id=current_clinic,
+        practitioner_id=practitioner_id,
+        treatment_id=treatment_id,
+        start_at=start_at,
+        end_at=end_at,
+        exclude_appointment_id=exclude_appointment_id,
     )
-    timezone_name = await _clinic_timezone(cur, current_clinic)
-    await _hours_and_holidays(
-        cur,
-        current_clinic,
-        resolved_practitioner,
-        start_at,
-        resolved_end,
-        timezone_name,
-    )
-    await _overlap(
-        cur,
-        current_clinic,
-        resolved_practitioner,
-        start_at,
-        resolved_end,
-        exclude_appointment_id,
-    )
-    return resolved_practitioner, resolved_end
 
 
 @router.get("/appointments", tags=["Rendez-vous"])
@@ -600,127 +673,23 @@ async def availability(
             }
 
 
-@router.post("/appointments", tags=["Rendez-vous"], status_code=status.HTTP_201_CREATED)
+@router.post(
+    "/appointments",
+    tags=["Rendez-vous"],
+    status_code=status.HTTP_201_CREATED,
+)
 async def create_appointment(
     payload: AppointmentIn,
     current_clinic: UUID = Depends(clinic_id),
 ) -> dict:
     async with connection() as conn:
         async with conn.cursor() as cur:
-            await cur.execute(
-                """
-                SELECT id, full_name, phone
-                FROM patients
-                WHERE clinic_id = %s AND id = %s AND active = TRUE
-                """,
-                (current_clinic, payload.patient_id),
+            return await create_appointment_record(
+                cur=cur,
+                conn=conn,
+                clinic_id=current_clinic,
+                payload=payload,
             )
-            patient = await cur.fetchone()
-            if patient is None:
-                raise HTTPException(
-                    status_code=status.HTTP_404_NOT_FOUND,
-                    detail="Patient introuvable.",
-                )
-
-            practitioner_id, end_at = await _validate_slot(
-                cur,
-                current_clinic,
-                payload.practitioner_id,
-                payload.treatment_id,
-                payload.start_at,
-                payload.end_at,
-            )
-
-            await cur.execute(
-                """
-                SELECT
-                    p.full_name AS practitioner_name,
-                    COALESCE(p.google_calendar_id, c.google_calendar_id)
-                        AS calendar_id,
-                    c.timezone,
-                    t.name AS treatment_name
-                FROM practitioners p
-                JOIN clinics c ON c.id = p.clinic_id
-                LEFT JOIN treatments t
-                  ON t.id = %s AND t.clinic_id = c.id
-                WHERE p.id = %s AND p.clinic_id = %s
-                """,
-                (payload.treatment_id, practitioner_id, current_clinic),
-            )
-            context = await cur.fetchone()
-
-            if context is None or not context["calendar_id"]:
-                raise HTTPException(
-                    status_code=status.HTTP_409_CONFLICT,
-                    detail=(
-                        "Aucun calendrier Google n’est configuré pour "
-                        "ce praticien ou cette clinique."
-                    ),
-                )
-
-            await cur.execute(
-                """
-                INSERT INTO appointments (
-                    clinic_id, patient_id, practitioner_id, treatment_id,
-                    channel, status, start_at, end_at, notes
-                )
-                VALUES (%s, %s, %s, %s, %s, 'pending', %s, %s, %s)
-                RETURNING *
-                """,
-                (
-                    current_clinic,
-                    payload.patient_id,
-                    practitioner_id,
-                    payload.treatment_id,
-                    payload.channel,
-                    payload.start_at,
-                    end_at,
-                    payload.notes,
-                ),
-            )
-            appointment = await cur.fetchone()
-
-            event_body = make_event_body(
-                patient_name=patient["full_name"],
-                patient_phone=patient["phone"],
-                treatment_name=context["treatment_name"],
-                practitioner_name=context["practitioner_name"],
-                start_at=payload.start_at,
-                end_at=end_at,
-                timezone_name=context["timezone"],
-                appointment_id=str(appointment["id"]),
-            )
-
-            try:
-                event = await create_event(context["calendar_id"], event_body)
-            except (CalendarConfigurationError, CalendarOperationError) as exc:
-                await conn.rollback()
-                raise HTTPException(
-                    status_code=status.HTTP_502_BAD_GATEWAY,
-                    detail=str(exc),
-                ) from exc
-
-            await cur.execute(
-                """
-                UPDATE appointments
-                SET status = %s,
-                    google_calendar_event_id = %s,
-                    updated_at = NOW()
-                WHERE id = %s
-                RETURNING *
-                """,
-                (
-                    payload.status,
-                    event["id"],
-                    appointment["id"],
-                ),
-            )
-            result = await cur.fetchone()
-            await conn.commit()
-            return {
-                **result,
-                "google_calendar_html_link": event.get("htmlLink"),
-            }
 
 
 @router.patch(
@@ -734,109 +703,13 @@ async def reschedule_appointment(
 ) -> dict:
     async with connection() as conn:
         async with conn.cursor() as cur:
-            await cur.execute(
-                """
-                SELECT
-                    a.*,
-                    p.full_name AS patient_name,
-                    p.phone AS patient_phone,
-                    pr.full_name AS practitioner_name,
-                    COALESCE(pr.google_calendar_id, c.google_calendar_id)
-                        AS calendar_id,
-                    c.timezone,
-                    t.name AS treatment_name
-                FROM appointments a
-                JOIN patients p ON p.id = a.patient_id
-                JOIN practitioners pr ON pr.id = a.practitioner_id
-                JOIN clinics c ON c.id = a.clinic_id
-                LEFT JOIN treatments t ON t.id = a.treatment_id
-                WHERE a.id = %s
-                  AND a.clinic_id = %s
-                  AND a.status IN ('pending', 'confirmed')
-                FOR UPDATE OF a
-                """,
-                (appointment_id, current_clinic),
+            return await reschedule_appointment_record(
+                cur=cur,
+                conn=conn,
+                clinic_id=current_clinic,
+                appointment_id=appointment_id,
+                payload=payload,
             )
-            appointment = await cur.fetchone()
-            if appointment is None:
-                raise HTTPException(
-                    status_code=status.HTTP_404_NOT_FOUND,
-                    detail="Rendez-vous actif introuvable.",
-                )
-
-            _, end_at = await _validate_slot(
-                cur,
-                current_clinic,
-                appointment["practitioner_id"],
-                appointment["treatment_id"],
-                payload.start_at,
-                payload.end_at,
-                exclude_appointment_id=appointment_id,
-            )
-
-            
-
-            event_body = make_event_body(
-                patient_name=appointment["patient_name"],
-                patient_phone=appointment["patient_phone"],
-                treatment_name=appointment["treatment_name"],
-                practitioner_name=appointment["practitioner_name"],
-                start_at=payload.start_at,
-                end_at=end_at,
-                timezone_name=appointment["timezone"],
-                appointment_id=str(appointment_id),
-            )
-
-            try:
-                if appointment["google_calendar_event_id"]:
-                    event = await update_event(
-                        appointment["calendar_id"],
-                        appointment["google_calendar_event_id"],
-                        event_body,
-                    )
-                    google_event_id = appointment["google_calendar_event_id"]
-                else:
-                    event = await create_event(
-                        appointment["calendar_id"],
-                        event_body,
-                    )
-                    google_event_id = event["id"]
-
-            except (
-                CalendarConfigurationError,
-                CalendarOperationError,
-            ) as exc:
-                await conn.rollback()
-                raise HTTPException(
-                    status_code=status.HTTP_502_BAD_GATEWAY,
-                    detail=str(exc),
-                ) from exc
-     
-               
- 
-            await cur.execute(
-                """
-                UPDATE appointments
-SET start_at = %s,
-    end_at = %s,
-    google_calendar_event_id = %s,
-    updated_at = NOW()
-WHERE id = %s
-RETURNING *
-                """,
-                (
-    payload.start_at,
-    end_at,
-    google_event_id,
-    appointment_id,
-),
-            )
-            result = await cur.fetchone()
-            await conn.commit()
-            return {
-                **result,
-                "google_calendar_html_link": event.get("htmlLink"),
-            }
 
 
 @router.delete(
@@ -849,62 +722,10 @@ async def cancel_appointment(
 ) -> dict:
     async with connection() as conn:
         async with conn.cursor() as cur:
-            await cur.execute(
-                """
-                SELECT
-                    a.id,
-                    a.status,
-                    a.google_calendar_event_id,
-                    COALESCE(pr.google_calendar_id, c.google_calendar_id)
-                        AS calendar_id
-                FROM appointments a
-                LEFT JOIN practitioners pr ON pr.id = a.practitioner_id
-                JOIN clinics c ON c.id = a.clinic_id
-                WHERE a.id = %s AND a.clinic_id = %s
-                FOR UPDATE OF a
-                """,
-                (appointment_id, current_clinic),
+            return await cancel_appointment_record(
+                cur=cur,
+                conn=conn,
+                clinic_id=current_clinic,
+                appointment_id=appointment_id,
             )
-            appointment = await cur.fetchone()
-            if appointment is None:
-                raise HTTPException(
-                    status_code=status.HTTP_404_NOT_FOUND,
-                    detail="Rendez-vous introuvable.",
-                )
 
-            if appointment["status"] == "cancelled":
-                return {
-                    "id": appointment_id,
-                    "status": "cancelled",
-                    "already_cancelled": True,
-                }
-
-            if (
-                appointment["google_calendar_event_id"]
-                and appointment["calendar_id"]
-            ):
-                try:
-                    await delete_event(
-                        appointment["calendar_id"],
-                        appointment["google_calendar_event_id"],
-                    )
-                except (CalendarConfigurationError, CalendarOperationError) as exc:
-                    await conn.rollback()
-                    raise HTTPException(
-                        status_code=status.HTTP_502_BAD_GATEWAY,
-                        detail=str(exc),
-                    ) from exc
-
-            await cur.execute(
-                """
-                UPDATE appointments
-                SET status = 'cancelled',
-                    updated_at = NOW()
-                WHERE id = %s
-                RETURNING *
-                """,
-                (appointment_id,),
-            )
-            result = await cur.fetchone()
-            await conn.commit()
-            return result

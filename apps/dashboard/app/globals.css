@@ -366,3 +366,95 @@
   opacity: 0.6;
   cursor: wait;
 }
+/* DentalFlow Step 8 Documents */
+
+.document-header{
+  display:flex;
+  justify-content:space-between;
+  align-items:center;
+  gap:16px;
+  margin-bottom:16px;
+}
+
+.document-upload-form{
+  display:grid;
+  gap:16px;
+  padding:16px;
+  margin-bottom:16px;
+  border:1px solid var(--line);
+  border-radius:12px;
+  background:#fafbfd;
+}
+
+.document-upload-form label{
+  display:grid;
+  gap:8px;
+  font-size:13px;
+  font-weight:700;
+}
+
+.document-upload-form select,
+.document-upload-form input{
+  padding:11px 12px;
+  border:1px solid var(--line);
+  border-radius:10px;
+  background:white;
+  font:inherit;
+}
+
+.document-upload-form button{
+  justify-self:start;
+}
+
+.document-item{
+  display:flex;
+  justify-content:space-between;
+  align-items:center;
+  gap:16px;
+  padding:12px;
+  border:1px solid var(--line);
+  border-radius:10px;
+  background:white;
+}
+
+.document-info{
+  flex:1;
+}
+
+.document-actions{
+  display:flex;
+  gap:8px;
+  align-items:center;
+}
+
+.document-icon-button{
+  width:36px;
+  height:36px;
+  border:1px solid var(--line);
+  border-radius:10px;
+  background:white;
+  cursor:pointer;
+}
+
+.document-icon-button:hover{
+  background:var(--primary-soft);
+}
+
+.calendar-slot {
+  display: block;
+  width: 100%;
+  padding: 0;
+  border: 0;
+  border-bottom: 1px solid #f0f3f7;
+  border-radius: 0;
+  background: transparent;
+  cursor: pointer;
+}
+
+.calendar-slot:nth-child(4n) {
+  border-bottom-color: #dce2ea;
+}
+
+.calendar-slot:hover {
+  background: #eef8fa;
+}

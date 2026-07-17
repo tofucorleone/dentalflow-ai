@@ -70,8 +70,8 @@ async def get_patient_360(
 
             await cur.execute(
                 """
-                SELECT id, document_type, filename, storage_url,
-                       mime_type, size_bytes, created_at
+                SELECT id, document_type, filename, original_filename,
+                        storage_url, mime_type, size_bytes, created_at
                 FROM patient_documents
                 WHERE clinic_id = %s AND patient_id = %s
                 ORDER BY created_at DESC
@@ -146,6 +146,45 @@ async def create_note(
             note = await cur.fetchone()
             await conn.commit()
             return note
+
+
+@router.delete(
+    "/{patient_id}/notes/{note_id}",
+    status_code=status.HTTP_204_NO_CONTENT,
+)
+async def delete_note(
+    patient_id: UUID,
+    note_id: UUID,
+    current_clinic: UUID = Depends(clinic_id),
+) -> None:
+    async with connection() as conn:
+        async with conn.cursor() as cur:
+            await ensure_patient(cur, current_clinic, patient_id)
+
+            await cur.execute(
+                """
+                DELETE FROM patient_notes
+                WHERE id = %s
+                  AND patient_id = %s
+                  AND clinic_id = %s
+                RETURNING id
+                """,
+                (
+                    note_id,
+                    patient_id,
+                    current_clinic,
+                ),
+            )
+
+            deleted_note = await cur.fetchone()
+
+            if deleted_note is None:
+                raise HTTPException(
+                    status_code=status.HTTP_404_NOT_FOUND,
+                    detail="Note introuvable.",
+                )
+
+            await conn.commit()
 
 
 @router.put("/{patient_id}/memory")

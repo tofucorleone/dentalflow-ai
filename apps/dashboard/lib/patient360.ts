@@ -25,12 +25,15 @@ export type Patient360 = {
     created_at: string;
   }>;
   documents: Array<{
-    id: string;
-    document_type: string;
-    filename: string;
-    storage_url: string;
-    created_at: string;
-  }>;
+  id: string;
+  document_type: string;
+  filename: string;
+  original_filename: string;
+  storage_url: string;
+  mime_type: string | null;
+  size_bytes: number | null;
+  created_at: string;
+}>;
   conversations: Array<{
     id: string;
     channel: string;
