@@ -28,6 +28,9 @@ from app.ai.treatment_matcher import find_treatment_in_message
 from app.ai.confirmation_parser import parse_confirmation
 from app.ai.conversation_state import save_conversation_state
 from app.ai.message_parser import extract_message_parts
+from app.ai.conversation_reference_resolver import (
+    resolve_relative_reference,
+)
 from app.ai.practitioner_matcher import (
     find_practitioner_in_message,
 )
@@ -95,6 +98,11 @@ async def handle_booking(
         )
 
     patient_id = patient["id"]
+    message = resolve_relative_reference(
+        message=message,
+        context=current_context,
+    )
+
     parts = extract_message_parts(message)
     treatment = await find_treatment_in_message(
         clinic_id=clinic_id,

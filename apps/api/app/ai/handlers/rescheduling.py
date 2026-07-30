@@ -5,6 +5,9 @@ from zoneinfo import ZoneInfo
 from app.ai.confirmation_parser import parse_confirmation
 from app.ai.conversation_state import save_conversation_state
 from app.ai.message_parser import extract_message_parts
+from app.ai.conversation_reference_resolver import (
+    resolve_relative_reference,
+)
 from app.ai.schemas import ConversationChannel, ConversationResult
 from app.appointment_service import get_next_patient_appointment
 
@@ -39,6 +42,11 @@ async def handle_rescheduling(
 
     local_start = appointment["start_at"].astimezone(
         ZoneInfo("Africa/Algiers"),
+    )
+
+    message = resolve_relative_reference(
+        message=message,
+        context=current_context,
     )
 
     parts = extract_message_parts(message)
