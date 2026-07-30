@@ -36,3 +36,5 @@ storage/patients/*
 storage/temp/*
 !storage/patients/.gitkeep
 !storage/temp/.gitkeep
+*.bak
+*.before-*
