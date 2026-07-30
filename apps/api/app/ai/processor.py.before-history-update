@@ -1,8 +1,8 @@
 from app.ai.conversation_state import (
-    append_conversation_turn,
     get_conversation_state,
     save_conversation_state,
 )
+from app.ai.conversation_memory import append_message
 from app.ai.handlers.booking import (
     handle_booking,
     handle_booking_confirmation_response,
@@ -27,7 +27,6 @@ from app.ai.llm.chat_model import (
     ChatReplyContext,
     generate_natural_reply,
 )
-from app.ai.llm.history_formatter import format_history_for_llm
 from app.ai.llm.conversation_interpreter import (
     ConversationInterpretationError,
     interpret_conversation_message,
@@ -68,13 +67,11 @@ async def _process_with_llm_fallback(
     conversation: ConversationInput,
     patient: dict,
     patient_id,
-    conversation_context: str | None = None,
 ) -> ConversationResult | None:
     try:
         interpretation = await interpret_conversation_message(
             clinic_id=conversation.clinic_id,
             message=conversation.message,
-            conversation_context=conversation_context,
         )
     except (
         LlmConfigurationError,
@@ -484,15 +481,10 @@ async def _process_conversation_core(
             patient_id=patient_id,
         )
 
-    conversation_context = format_history_for_llm(
-        active_context,
-    )
-
     llm_result = await _process_with_llm_fallback(
         conversation=conversation,
         patient=patient,
         patient_id=patient_id,
-        conversation_context=conversation_context,
     )
 
     if llm_result is not None:
@@ -541,12 +533,31 @@ async def process_conversation(
     )
 
     if final_result.patient_id is not None:
-        await append_conversation_turn(
+        current_state = await get_conversation_state(
             clinic_id=conversation.clinic_id,
             patient_id=final_result.patient_id,
             channel=conversation.channel,
-            user_message=conversation.message,
-            assistant_message=final_result.reply,
         )
+
+        if current_state is not None:
+            memory_context = append_message(
+                current_state["context"],
+                role="user",
+                content=conversation.message,
+            )
+
+            memory_context = append_message(
+                memory_context,
+                role="assistant",
+                content=final_result.reply,
+            )
+
+            await save_conversation_state(
+                clinic_id=conversation.clinic_id,
+                patient_id=final_result.patient_id,
+                channel=conversation.channel,
+                state=current_state["state"],
+                context=memory_context,
+            )
 
     return final_result

@@ -63,6 +63,23 @@ def parse_booking_date(
 ) -> date:
     normalized_date = normalize_text(date_text)
 
+    print(
+        "[DEBUG][DATE]",
+        {
+            "raw": date_text,
+            "normalized": normalized_date,
+        },
+        flush=True,
+    )
+
+    if normalized_date in {
+        "la semaine d apres",
+        "la semaine d'apres",
+        "semaine d apres",
+        "semaine d'apres",
+    }:
+        normalized_date = "la semaine prochaine"
+
     if normalized_date in {"aujourd'hui", "aujourdhui"}:
         return current.date()
 

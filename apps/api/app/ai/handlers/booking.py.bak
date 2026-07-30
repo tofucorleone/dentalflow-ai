@@ -1,0 +1,756 @@
+from datetime import datetime
+from typing import Any
+from uuid import UUID
+
+from fastapi import HTTPException
+
+from app.ai.booking_availability import (
+    check_booking_availability,
+    find_available_slots_for_preference,
+    find_next_available_slots,
+)
+from app.ai.booking_datetime import (
+    BookingDateTimeError,
+    normalize_text,
+)
+from app.ai.time_preferences import (
+    TimePreferenceError,
+    format_time_preference_label,
+    parse_time_preference,
+)
+from app.ai.treatment_matcher import find_treatment_in_message
+from app.ai.confirmation_parser import parse_confirmation
+from app.ai.conversation_state import save_conversation_state
+from app.ai.message_parser import extract_message_parts
+from app.ai.practitioner_matcher import (
+    find_practitioner_in_message,
+)
+from app.ai.schemas import ConversationChannel, ConversationResult
+from app.appointment_service import create_appointment_record
+from app.db import connection
+from app.practitioner_service import list_practitioners
+from app.schemas import AppointmentIn
+
+
+async def handle_booking(
+    clinic_id: UUID,
+    channel: ConversationChannel,
+    patient: dict | None,
+    message: str,
+) -> ConversationResult:
+    if patient is None:
+        return ConversationResult(
+            intent="book_appointment",
+            requires_human=True,
+            reply=(
+                "Je peux vous aider à prendre rendez-vous. "
+                "Pouvez-vous me communiquer votre nom complet ?"
+            ),
+        )
+
+    patient_id = patient["id"]
+    parts = extract_message_parts(message)
+    treatment = await find_treatment_in_message(
+        clinic_id=clinic_id,
+        message=message,
+    )
+    practitioner = await find_practitioner_in_message(
+        clinic_id=clinic_id,
+        message=message,
+    )
+
+    base_context = {
+        "intent": "book_appointment",
+    }
+
+    if parts.time_text is not None:
+        base_context["requested_time_text"] = parts.time_text
+
+    if treatment is not None:
+        base_context.update(
+            {
+                "treatment_id": str(treatment["id"]),
+                "treatment_name": treatment["name"],
+            }
+        )
+
+    if practitioner is not None:
+        base_context.update(
+            {
+                "practitioner_id": str(practitioner["id"]),
+                "practitioner_name": practitioner["full_name"],
+            }
+        )
+
+    if parts.date_text is not None:
+        date_context = {
+            **base_context,
+            "requested_date_text": parts.date_text,
+        }
+
+        if parts.time_text is not None:
+            await save_conversation_state(
+                clinic_id=clinic_id,
+                patient_id=patient_id,
+                channel=channel,
+                state="waiting_for_time",
+                context=date_context,
+            )
+
+            return await handle_booking_time_response(
+                clinic_id=clinic_id,
+                channel=channel,
+                patient=patient,
+                message=parts.time_text,
+                current_context=date_context,
+            )
+
+        return await handle_booking_date_response(
+            clinic_id=clinic_id,
+            channel=channel,
+            patient=patient,
+            message=parts.date_text,
+            current_context=base_context,
+        )
+
+    await save_conversation_state(
+        clinic_id=clinic_id,
+        patient_id=patient_id,
+        channel=channel,
+        state="waiting_for_date",
+        context=base_context,
+    )
+
+    return ConversationResult(
+        intent="book_appointment",
+        patient_id=patient_id,
+        reply="Avec plaisir 😊 Quel jour souhaitez-vous venir ?",
+    )
+
+
+async def handle_booking_date_response(
+    clinic_id: UUID,
+    channel: ConversationChannel,
+    patient: dict,
+    message: str,
+    current_context: dict[str, Any] | None = None,
+) -> ConversationResult:
+    parts = extract_message_parts(message)
+    context = dict(current_context or {})
+
+    if parts.any_practitioner:
+        context.pop("practitioner_id", None)
+        context.pop("practitioner_name", None)
+
+        if parts.date_text is None:
+            context["intent"] = "book_appointment"
+
+            await save_conversation_state(
+                clinic_id=clinic_id,
+                patient_id=patient["id"],
+                channel=channel,
+                state="waiting_for_date",
+                context=context,
+            )
+
+            return ConversationResult(
+                intent="book_appointment",
+                patient_id=patient["id"],
+                reply=(
+                    "Très bien, je chercherai avec n'importe quel "
+                    "praticien disponible. Quel jour souhaitez-vous venir ?"
+                ),
+            )
+
+    if parts.practitioner_text is not None:
+        practitioner = await find_practitioner_in_message(
+            clinic_id=clinic_id,
+            message=message,
+        )
+
+        if practitioner is None:
+            return ConversationResult(
+                intent="book_appointment",
+                patient_id=patient["id"],
+                reply=(
+                    "Je n'ai pas trouvé ce praticien parmi "
+                    "les praticiens disponibles. "
+                    "Pouvez-vous préciser son nom ?"
+                ),
+            )
+
+        context.update(
+            {
+                "practitioner_id": str(practitioner["id"]),
+                "practitioner_name": practitioner["full_name"],
+            }
+        )
+
+        if parts.date_text is None:
+            context["intent"] = "book_appointment"
+
+            await save_conversation_state(
+                clinic_id=clinic_id,
+                patient_id=patient["id"],
+                channel=channel,
+                state="waiting_for_date",
+                context=context,
+            )
+
+            return ConversationResult(
+                intent="book_appointment",
+                patient_id=patient["id"],
+                reply=(
+                    f"Très bien, avec {practitioner['full_name']}. "
+                    "Quel jour souhaitez-vous venir ?"
+                ),
+            )
+
+    requested_date = parts.date_text or message.strip()
+
+    context.update(
+        {
+            "intent": "book_appointment",
+            "requested_date_text": requested_date,
+        }
+    )
+
+    requested_time = (
+        parts.time_text
+        if parts.time_text is not None
+        else context.get("requested_time_text")
+    )
+
+    if requested_time:
+        return await handle_booking_time_response(
+            clinic_id=clinic_id,
+            channel=channel,
+            patient=patient,
+            message=requested_time,
+            current_context=context,
+        )
+
+    await save_conversation_state(
+        clinic_id=clinic_id,
+        patient_id=patient["id"],
+        channel=channel,
+        state="waiting_for_time",
+        context=context,
+    )
+
+    return ConversationResult(
+        intent="book_appointment",
+        patient_id=patient["id"],
+        reply=(
+            f"Très bien, vous souhaitez venir {requested_date}. "
+            "À quelle heure souhaitez-vous le rendez-vous ?"
+        ),
+    )
+
+
+async def handle_booking_time_response(
+    clinic_id: UUID,
+    channel: ConversationChannel,
+    patient: dict,
+    message: str,
+    current_context: dict[str, Any] | None = None,
+) -> ConversationResult:
+    parts = extract_message_parts(message)
+    context = dict(current_context or {})
+
+    if parts.date_text is not None:
+        context["requested_date_text"] = parts.date_text
+
+    if parts.any_practitioner:
+        context.pop("practitioner_id", None)
+        context.pop("practitioner_name", None)
+
+        if parts.time_text is None:
+            await save_conversation_state(
+                clinic_id=clinic_id,
+                patient_id=patient["id"],
+                channel=channel,
+                state="waiting_for_time",
+                context=context,
+            )
+
+            return ConversationResult(
+                intent="book_appointment",
+                patient_id=patient["id"],
+                reply=(
+                    "Très bien, je chercherai avec n'importe quel "
+                    "praticien disponible. À quelle heure souhaitez-vous "
+                    "le rendez-vous ?"
+                ),
+            )
+
+    if parts.practitioner_text is not None:
+        practitioner = await find_practitioner_in_message(
+            clinic_id=clinic_id,
+            message=message,
+        )
+
+        if practitioner is None:
+            return ConversationResult(
+                intent="book_appointment",
+                patient_id=patient["id"],
+                reply=(
+                    "Je n'ai pas trouvé ce praticien parmi "
+                    "les praticiens disponibles. "
+                    "Pouvez-vous préciser son nom ?"
+                ),
+            )
+
+        context.update(
+            {
+                "practitioner_id": str(practitioner["id"]),
+                "practitioner_name": practitioner["full_name"],
+            }
+        )
+
+        if parts.time_text is None:
+            await save_conversation_state(
+                clinic_id=clinic_id,
+                patient_id=patient["id"],
+                channel=channel,
+                state="waiting_for_time",
+                context=context,
+            )
+
+            return ConversationResult(
+                intent="book_appointment",
+                patient_id=patient["id"],
+                reply=(
+                    f"Très bien, avec {practitioner['full_name']}. "
+                    "À quelle heure souhaitez-vous le rendez-vous ?"
+                ),
+            )
+
+    requested_time = (
+        parts.time_text
+        if parts.time_text is not None
+        else message.strip()
+    )
+    requested_date = context.get("requested_date_text")
+    treatment_id_text = context.get("treatment_id")
+    treatment_id = (
+        UUID(treatment_id_text)
+        if treatment_id_text
+        else None
+    )
+    practitioner_id_text = context.get("practitioner_id")
+    practitioner_id = (
+        UUID(practitioner_id_text)
+        if practitioner_id_text
+        else None
+    )
+
+    if not requested_date:
+        return ConversationResult(
+            intent="book_appointment",
+            patient_id=patient["id"],
+            reply=(
+                "Je n'ai pas retrouvé le jour demandé. "
+                "Pouvez-vous me redonner la date souhaitée ?"
+            ),
+        )
+
+    try:
+        preference = parse_time_preference(requested_time)
+    except TimePreferenceError:
+        preference = None
+
+    if preference is not None and preference.exact_time is None:
+        try:
+            suggestions = await find_available_slots_for_preference(
+                clinic_id=clinic_id,
+                date_text=requested_date,
+                preference=preference,
+                practitioner_id=practitioner_id,
+                treatment_id=treatment_id,
+                limit=3,
+            )
+        except BookingDateTimeError as exc:
+            return ConversationResult(
+                intent="book_appointment",
+                patient_id=patient["id"],
+                reply=str(exc),
+            )
+
+        if not suggestions:
+            return ConversationResult(
+                intent="book_appointment",
+                patient_id=patient["id"],
+                reply=(
+                    "Je n'ai trouvé aucun créneau disponible "
+                    f"{requested_time} pour {requested_date}. "
+                    "Pouvez-vous choisir une autre préférence horaire ?"
+                ),
+            )
+
+        practitioners = await list_practitioners(
+            clinic_id=clinic_id,
+            include_inactive=False,
+        )
+        practitioner_names = {
+            practitioner["id"]: practitioner["full_name"]
+            for practitioner in practitioners
+        }
+
+        suggestion_lines = [
+            (
+                f"• {start_at.strftime('%Hh%M')} "
+                f"avec le "
+                f"{practitioner_names.get(
+                    suggested_practitioner_id,
+                    'praticien disponible',
+                )}"
+            )
+            for suggested_practitioner_id, start_at, _ in suggestions
+        ]
+
+        suggested_slots = [
+            {
+                "practitioner_id": str(suggested_practitioner_id),
+                "practitioner_name": practitioner_names.get(
+                    suggested_practitioner_id,
+                ),
+                "start_at": start_at.isoformat(),
+                "end_at": end_at.isoformat(),
+            }
+            for suggested_practitioner_id, start_at, end_at in suggestions
+        ]
+
+        context["suggested_slots"] = suggested_slots
+
+        automatic_first_slot_preferences = {
+            "le plus tot possible",
+            "plus tot possible",
+            "premier creneau",
+            "premier creneau disponible",
+            "n'importe quand",
+            "quand vous voulez",
+        }
+
+        if (
+            normalize_text(requested_time)
+            in automatic_first_slot_preferences
+        ):
+            first_start_at = suggestions[0][1]
+
+            return await handle_booking_time_response(
+                clinic_id=clinic_id,
+                channel=channel,
+                patient=patient,
+                message=first_start_at.strftime("%Hh%M"),
+                current_context=context,
+            )
+
+        await save_conversation_state(
+            clinic_id=clinic_id,
+            patient_id=patient["id"],
+            channel=channel,
+            state="waiting_for_time",
+            context=context,
+        )
+
+        return ConversationResult(
+            intent="book_appointment",
+            patient_id=patient["id"],
+            reply=(
+                "Voici les premiers créneaux disponibles "
+                f"{format_time_preference_label(requested_date, requested_time)} "
+                ":\n\n"
+                + "\n".join(suggestion_lines)
+                + "\n\nQuel créneau préférez-vous ?"
+            ),
+            metadata={
+                "suggested_slots": suggested_slots,
+            },
+        )
+
+    selected_practitioner_name = context.get(
+        "practitioner_name"
+    )
+
+    if preference is not None and preference.exact_time is not None:
+        for suggested_slot in context.get("suggested_slots", []):
+            suggested_start = datetime.fromisoformat(
+                suggested_slot["start_at"]
+            )
+
+            if (
+                suggested_start.hour == preference.exact_time.hour
+                and suggested_start.minute == preference.exact_time.minute
+            ):
+                practitioner_id = UUID(
+                    suggested_slot["practitioner_id"]
+                )
+                selected_practitioner_name = suggested_slot.get(
+                    "practitioner_name"
+                )
+                break
+
+    try:
+        practitioner_id, start_at, end_at = (
+            await check_booking_availability(
+                clinic_id=clinic_id,
+                date_text=requested_date,
+                time_text=requested_time,
+                practitioner_id=practitioner_id,
+                treatment_id=treatment_id,
+            )
+        )
+    except BookingDateTimeError as exc:
+        return ConversationResult(
+            intent="book_appointment",
+            patient_id=patient["id"],
+            reply=str(exc),
+        )
+    except HTTPException as exc:
+        detail = exc.detail
+
+        if isinstance(detail, dict):
+            message_text = detail.get(
+                "message",
+                "Ce créneau n'est pas disponible.",
+            )
+        else:
+            message_text = str(detail)
+
+        suggestions = await find_next_available_slots(
+            clinic_id=clinic_id,
+            date_text=requested_date,
+            time_text=requested_time,
+            practitioner_id=practitioner_id,
+            treatment_id=treatment_id,
+        )
+
+        if not suggestions:
+            return ConversationResult(
+                intent="book_appointment",
+                patient_id=patient["id"],
+                reply=(
+                    f"{message_text} "
+                    "Je n'ai trouvé aucun autre créneau proche. "
+                    "Pouvez-vous choisir une autre heure ?"
+                ),
+            )
+
+        suggestion_lines = [
+            f"• {start_at.strftime('%Hh%M')}"
+            for _, start_at, _ in suggestions
+        ]
+
+        return ConversationResult(
+            intent="book_appointment",
+            patient_id=patient["id"],
+            reply=(
+                f"{message_text}\n\n"
+                "Je peux vous proposer :\n"
+                + "\n".join(suggestion_lines)
+                + "\n\nQuel créneau préférez-vous ?"
+            ),
+        )
+
+    context.pop("suggested_slots", None)
+
+    context.update(
+        {
+            "intent": "book_appointment",
+            "requested_time_text": requested_time,
+            "practitioner_id": str(practitioner_id),
+            "start_at": start_at.isoformat(),
+            "end_at": end_at.isoformat(),
+        }
+    )
+
+    if selected_practitioner_name:
+        context["practitioner_name"] = (
+            selected_practitioner_name
+        )
+
+    await save_conversation_state(
+        clinic_id=clinic_id,
+        patient_id=patient["id"],
+        channel=channel,
+        state="waiting_for_confirmation",
+        context=context,
+    )
+
+    treatment_name = context.get("treatment_name")
+    practitioner_name = context.get("practitioner_name")
+
+    details = []
+
+    if practitioner_name:
+        if practitioner_name.lower().startswith("dr "):
+            details.append(f"avec le {practitioner_name}")
+        else:
+            details.append(f"avec {practitioner_name}")
+
+    if treatment_name:
+        details.append(
+            f"pour un {treatment_name.lower()}"
+        )
+
+    details_text = (
+        " " + " ".join(details)
+        if details
+        else ""
+    )
+
+    return ConversationResult(
+        intent="book_appointment",
+        patient_id=patient["id"],
+        reply=(
+            f"Le créneau {requested_date} à {requested_time}"
+            f"{details_text} est disponible. "
+            "Confirmez-vous ce rendez-vous ?"
+        ),
+    )
+
+
+async def handle_booking_confirmation_response(
+    clinic_id: UUID,
+    channel: ConversationChannel,
+    patient: dict,
+    message: str,
+    current_context: dict[str, Any] | None = None,
+) -> ConversationResult:
+    confirmation = parse_confirmation(message)
+    context = dict(current_context or {})
+
+    if confirmation is False:
+        await save_conversation_state(
+            clinic_id=clinic_id,
+            patient_id=patient["id"],
+            channel=channel,
+            state="completed",
+            context={
+                **context,
+                "confirmed": False,
+            },
+        )
+
+        return ConversationResult(
+            intent="book_appointment",
+            patient_id=patient["id"],
+            reply=(
+                "Très bien, le rendez-vous n'a pas été créé. "
+                "Je reste disponible si vous souhaitez un autre créneau."
+            ),
+        )
+
+    if confirmation is None:
+        return ConversationResult(
+            intent="book_appointment",
+            patient_id=patient["id"],
+            reply=(
+                "Pouvez-vous répondre par « oui » pour confirmer "
+                "ou « non » pour annuler ?"
+            ),
+        )
+
+    practitioner_id = context.get("practitioner_id")
+    treatment_id = context.get("treatment_id")
+    start_at = context.get("start_at")
+    end_at = context.get("end_at")
+
+    if not practitioner_id or not start_at or not end_at:
+        return ConversationResult(
+            intent="book_appointment",
+            patient_id=patient["id"],
+            reply=(
+                "Je n'ai pas retrouvé toutes les informations du créneau. "
+                "Pouvez-vous recommencer votre demande de rendez-vous ?"
+            ),
+            requires_human=True,
+        )
+
+    appointment_channel = (
+        channel
+        if channel in {"whatsapp", "phone", "web"}
+        else "web"
+    )
+
+    payload = AppointmentIn(
+        patient_id=patient["id"],
+        practitioner_id=UUID(practitioner_id),
+        treatment_id=(
+            UUID(treatment_id)
+            if treatment_id
+            else None
+        ),
+        channel=appointment_channel,
+        status="confirmed",
+        start_at=datetime.fromisoformat(start_at),
+        end_at=datetime.fromisoformat(end_at),
+        notes="Rendez-vous créé par l'assistant conversationnel.",
+    )
+
+    try:
+        async with connection() as conn:
+            async with conn.cursor() as cur:
+                appointment = await create_appointment_record(
+                    cur=cur,
+                    conn=conn,
+                    clinic_id=clinic_id,
+                    payload=payload,
+                )
+    except HTTPException as exc:
+        detail = exc.detail
+
+        if isinstance(detail, dict):
+            error_message = detail.get(
+                "message",
+                "Impossible de créer ce rendez-vous.",
+            )
+        else:
+            error_message = str(detail)
+
+        return ConversationResult(
+            intent="book_appointment",
+            patient_id=patient["id"],
+            reply=(
+                f"{error_message} "
+                "Souhaitez-vous essayer un autre créneau ?"
+            ),
+            requires_human=exc.status_code >= 500,
+        )
+
+    await save_conversation_state(
+        clinic_id=clinic_id,
+        patient_id=patient["id"],
+        channel=channel,
+        state="completed",
+        context={
+            **context,
+            "confirmed": True,
+            "appointment_id": str(appointment["id"]),
+        },
+    )
+
+    requested_date = context.get(
+        "requested_date_text",
+        "le jour choisi",
+    )
+    requested_time = context.get(
+        "requested_time_text",
+        "l'heure choisie",
+    )
+
+    return ConversationResult(
+        intent="book_appointment",
+        patient_id=patient["id"],
+        reply=(
+            f"Votre rendez-vous est confirmé pour {requested_date} "
+            f"à {requested_time} 🎉"
+        ),
+        metadata={
+            "appointment_id": str(appointment["id"]),
+            "start_at": appointment["start_at"].isoformat(),
+            "end_at": appointment["end_at"].isoformat(),
+        },
+    )
+

@@ -37,12 +37,6 @@ class ConversationInterpretation(BaseModel):
         max_length=120,
     )
 
-    selected_slot_index: int | None = Field(
-        default=None,
-        ge=1,
-        le=10,
-    )
-
     confidence: float = Field(
         ge=0,
         le=1,
@@ -87,9 +81,6 @@ Règles générales :
   human_handoff.
 - Ne donne jamais de diagnostic médical.
 - Le moteur métier DentalFlow vérifiera toutes les informations.
-- Si le patient choisit un créneau parmi une liste ("le premier",
-  "le deuxième", "le 3e"...), renseigne selected_slot_index.
-- Si aucun créneau n'est explicitement choisi, retourne null.
 - Normalise les préférences horaires usuelles :
   - "après le travail" ou "après le boulot" -> "après 17h"
   - "pause déjeuner" ou "à midi" -> "entre 12h et 14h"

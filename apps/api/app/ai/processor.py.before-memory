@@ -1,5 +1,4 @@
 from app.ai.conversation_state import (
-    append_conversation_turn,
     get_conversation_state,
     save_conversation_state,
 )
@@ -27,7 +26,6 @@ from app.ai.llm.chat_model import (
     ChatReplyContext,
     generate_natural_reply,
 )
-from app.ai.llm.history_formatter import format_history_for_llm
 from app.ai.llm.conversation_interpreter import (
     ConversationInterpretationError,
     interpret_conversation_message,
@@ -68,13 +66,11 @@ async def _process_with_llm_fallback(
     conversation: ConversationInput,
     patient: dict,
     patient_id,
-    conversation_context: str | None = None,
 ) -> ConversationResult | None:
     try:
         interpretation = await interpret_conversation_message(
             clinic_id=conversation.clinic_id,
             message=conversation.message,
-            conversation_context=conversation_context,
         )
     except (
         LlmConfigurationError,
@@ -484,15 +480,10 @@ async def _process_conversation_core(
             patient_id=patient_id,
         )
 
-    conversation_context = format_history_for_llm(
-        active_context,
-    )
-
     llm_result = await _process_with_llm_fallback(
         conversation=conversation,
         patient=patient,
         patient_id=patient_id,
-        conversation_context=conversation_context,
     )
 
     if llm_result is not None:
@@ -512,8 +503,7 @@ async def process_conversation(
     conversation: ConversationInput,
 ) -> ConversationResult:
     """
-    Exécute le moteur métier, reformule la réponse naturellement,
-    puis enregistre le tour dans la mémoire conversationnelle.
+    Exécute le moteur métier puis reformule sa réponse naturellement.
 
     La réponse métier reste utilisée automatiquement si le modèle
     conversationnel est indisponible.
@@ -530,23 +520,12 @@ async def process_conversation(
         ),
     )
 
-    final_result = (
-        result
-        if natural_reply == result.reply
-        else result.model_copy(
-            update={
-                "reply": natural_reply,
-            },
-        )
+    if natural_reply == result.reply:
+        return result
+
+    return result.model_copy(
+        update={
+            "reply": natural_reply,
+        },
     )
 
-    if final_result.patient_id is not None:
-        await append_conversation_turn(
-            clinic_id=conversation.clinic_id,
-            patient_id=final_result.patient_id,
-            channel=conversation.channel,
-            user_message=conversation.message,
-            assistant_message=final_result.reply,
-        )
-
-    return final_result

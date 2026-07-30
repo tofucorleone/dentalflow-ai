@@ -22,6 +22,7 @@ class MessageParts:
     time_preference: TimePreference | None = None
     treatment_text: str | None = None
     practitioner_text: str | None = None
+    any_practitioner: bool = False
 
 
 _DATE_PATTERNS = (
@@ -90,6 +91,20 @@ _PRACTITIONER_PATTERNS = (
 )
 
 
+_ANY_PRACTITIONER_PATTERNS = (
+    (
+        r"\bn[' ]importe\s+quel(?:le)?\s+"
+        r"(?:praticien|dentiste|docteur)\b"
+    ),
+    (
+        r"\bpeu\s+importe\s+(?:le\s+)?"
+        r"(?:praticien|dentiste|docteur)\b"
+    ),
+    r"\b(?:avec\s+)?n[' ]importe\s+qui\b",
+    r"\bpeu\s+importe\s+qui\b",
+)
+
+
 def _first_match(
     patterns: tuple[str, ...],
     text: str,
@@ -131,8 +146,17 @@ def _extract_practitioner_text(
 
 def extract_message_parts(message: str) -> MessageParts:
     normalized = normalize_text(message)
-    practitioner_text = _extract_practitioner_text(
-        normalized,
+    any_practitioner = (
+        _first_match(
+            _ANY_PRACTITIONER_PATTERNS,
+            normalized,
+        )
+        is not None
+    )
+    practitioner_text = (
+        None
+        if any_practitioner
+        else _extract_practitioner_text(normalized)
     )
 
     date_text = _first_match(
@@ -158,6 +182,7 @@ def extract_message_parts(message: str) -> MessageParts:
                 time_text=preference_text,
                 time_preference=preference,
                 practitioner_text=practitioner_text,
+                any_practitioner=any_practitioner,
             )
 
     exact_time_match = re.search(
@@ -182,9 +207,11 @@ def extract_message_parts(message: str) -> MessageParts:
                 time_text=exact_time,
                 time_preference=preference,
                 practitioner_text=practitioner_text,
+                any_practitioner=any_practitioner,
             )
 
     return MessageParts(
         date_text=date_text,
         practitioner_text=practitioner_text,
+        any_practitioner=any_practitioner,
     )
