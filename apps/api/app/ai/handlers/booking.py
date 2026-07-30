@@ -1,8 +1,14 @@
+import re
+
 from datetime import datetime
 from typing import Any
 from uuid import UUID
 
 from fastapi import HTTPException
+
+from app.ai.llm.conversation_interpreter import (
+    interpret_conversation_message,
+)
 
 from app.ai.booking_availability import (
     check_booking_availability,
@@ -30,6 +36,46 @@ from app.appointment_service import create_appointment_record
 from app.db import connection
 from app.practitioner_service import list_practitioners
 from app.schemas import AppointmentIn
+
+
+def extract_selected_slot_index(message: str) -> int | None:
+    text = message.lower().strip()
+
+    ordinal_patterns = [
+        (
+            r"\b(?:le|la)\s+(?:premier|première)\b"
+            r"|\b1(?:er|re|e|ème|eme)\b",
+            1,
+        ),
+        (
+            r"\b(?:le|la)\s+deuxième\b"
+            r"|\b2(?:e|ème|eme)\b",
+            2,
+        ),
+        (
+            r"\b(?:le|la)\s+troisième\b"
+            r"|\b3(?:e|ème|eme)\b",
+            3,
+        ),
+        (
+            r"\b(?:le|la)\s+quatrième\b"
+            r"|\b4(?:e|ème|eme)\b",
+            4,
+        ),
+    ]
+
+    for pattern, index in ordinal_patterns:
+        if re.search(pattern, text):
+            return index
+
+    numeric_match = re.search(
+        r"\b(?:num[ée]ro|n[°ºo])\s*(\d+)\b",
+        text,
+    )
+    if numeric_match:
+        return int(numeric_match.group(1))
+
+    return None
 
 
 async def handle_booking(
@@ -138,6 +184,30 @@ async def handle_booking_date_response(
     parts = extract_message_parts(message)
     context = dict(current_context or {})
 
+    if parts.any_practitioner:
+        context.pop("practitioner_id", None)
+        context.pop("practitioner_name", None)
+
+        if parts.date_text is None:
+            context["intent"] = "book_appointment"
+
+            await save_conversation_state(
+                clinic_id=clinic_id,
+                patient_id=patient["id"],
+                channel=channel,
+                state="waiting_for_date",
+                context=context,
+            )
+
+            return ConversationResult(
+                intent="book_appointment",
+                patient_id=patient["id"],
+                reply=(
+                    "Très bien, je chercherai avec n'importe quel "
+                    "praticien disponible. Quel jour souhaitez-vous venir ?"
+                ),
+            )
+
     if parts.practitioner_text is not None:
         practitioner = await find_practitioner_in_message(
             clinic_id=clinic_id,
@@ -182,7 +252,23 @@ async def handle_booking_date_response(
                 ),
             )
 
-    requested_date = parts.date_text or message.strip()
+    requested_date = parts.date_text
+
+    if requested_date is None:
+        interpretation = await interpret_conversation_message(
+            clinic_id=clinic_id,
+            message=message,
+            conversation_context=(
+                "Le patient est en train de réserver un rendez-vous. "
+                "Il faut comprendre la date à laquelle il souhaite venir."
+            ),
+        )
+
+        if interpretation.date_text:
+            requested_date = interpretation.date_text
+
+    if requested_date is None:
+        requested_date = message.strip()
 
     context.update(
         {
@@ -232,10 +318,45 @@ async def handle_booking_time_response(
     current_context: dict[str, Any] | None = None,
 ) -> ConversationResult:
     parts = extract_message_parts(message)
+
+    print(
+        "[DEBUG][TIME]",
+        {
+            "message": message,
+            "current_context": current_context,
+            "parts_date_text": parts.date_text,
+            "parts_time_text": parts.time_text,
+        },
+        flush=True,
+    )
+
     context = dict(current_context or {})
 
     if parts.date_text is not None:
         context["requested_date_text"] = parts.date_text
+
+    if parts.any_practitioner:
+        context.pop("practitioner_id", None)
+        context.pop("practitioner_name", None)
+
+        if parts.time_text is None:
+            await save_conversation_state(
+                clinic_id=clinic_id,
+                patient_id=patient["id"],
+                channel=channel,
+                state="waiting_for_time",
+                context=context,
+            )
+
+            return ConversationResult(
+                intent="book_appointment",
+                patient_id=patient["id"],
+                reply=(
+                    "Très bien, je chercherai avec n'importe quel "
+                    "praticien disponible. À quelle heure souhaitez-vous "
+                    "le rendez-vous ?"
+                ),
+            )
 
     if parts.practitioner_text is not None:
         practitioner = await find_practitioner_in_message(
@@ -313,6 +434,76 @@ async def handle_booking_time_response(
     except TimePreferenceError:
         preference = None
 
+        selected_slot_index = extract_selected_slot_index(message)
+        interpretation = None
+
+        if selected_slot_index is None:
+            interpretation = await interpret_conversation_message(
+                clinic_id=clinic_id,
+                message=message,
+                conversation_context=(
+                    "Le patient est en train de réserver un rendez-vous. "
+                    f"La date demandée est {requested_date}. "
+                    "Il reste uniquement à comprendre sa préférence horaire."
+                ),
+            )
+
+            if interpretation.time_text:
+                requested_time = interpretation.time_text
+
+            selected_slot_index = interpretation.selected_slot_index
+
+        if selected_slot_index is not None:
+            suggested_slots = context.get("suggested_slots", [])
+            slot_position = selected_slot_index - 1
+
+            if 0 <= slot_position < len(suggested_slots):
+                selected_slot = suggested_slots[slot_position]
+                selected_start = datetime.fromisoformat(
+                    selected_slot["start_at"]
+                )
+
+                requested_time = selected_start.strftime("%Hh%M")
+                practitioner_id = UUID(
+                    selected_slot["practitioner_id"]
+                )
+
+                if selected_slot.get("practitioner_name"):
+                    context["practitioner_name"] = selected_slot[
+                        "practitioner_name"
+                    ]
+
+                context["practitioner_id"] = str(practitioner_id)
+
+                try:
+                    preference = parse_time_preference(requested_time)
+                except TimePreferenceError:
+                    preference = None
+
+        print(
+            "[DEBUG][LLM]",
+            {
+                "interpretation_time_text": (
+                    interpretation.time_text
+                    if interpretation is not None
+                    else None
+                ),
+                "selected_slot_index": selected_slot_index,
+                "requested_time": requested_time,
+            },
+            flush=True,
+        )
+
+        if (
+            interpretation is not None
+            and interpretation.time_text
+            and selected_slot_index is None
+        ):
+            try:
+                preference = parse_time_preference(requested_time)
+            except TimePreferenceError:
+                preference = None
+
     if preference is not None and preference.exact_time is None:
         try:
             suggestions = await find_available_slots_for_preference(
@@ -324,6 +515,16 @@ async def handle_booking_time_response(
                 limit=3,
             )
         except BookingDateTimeError as exc:
+            print(
+                "[DEBUG][BOOKING_ERROR]",
+                {
+                    "requested_date": requested_date,
+                    "requested_time": requested_time,
+                    "error": str(exc),
+                },
+                flush=True,
+            )
+
             return ConversationResult(
                 intent="book_appointment",
                 patient_id=patient["id"],
