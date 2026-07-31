@@ -90,3 +90,25 @@ def test_resolve_day_before_previous_from_previous_start_at() -> None:
     )
 
     assert result == "30 juillet 2026"
+
+
+def test_resolve_two_hours_later_from_previous_start_at() -> None:
+    result = resolve_relative_reference(
+        message="2 heures plus tard",
+        context={
+            "previous_start_at": "2026-08-01T13:15:00+00:00",
+        },
+    )
+
+    assert result == "16h15"
+
+
+def test_resolve_two_hours_earlier_from_previous_start_at() -> None:
+    result = resolve_relative_reference(
+        message="2 heures plus tôt",
+        context={
+            "previous_start_at": "2026-08-01T13:15:00+00:00",
+        },
+    )
+
+    assert result == "12h15"

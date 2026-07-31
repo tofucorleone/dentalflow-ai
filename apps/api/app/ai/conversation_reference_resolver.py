@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime, timedelta
+import re
 from typing import Any
 from zoneinfo import ZoneInfo
 
@@ -35,6 +36,25 @@ def _format_booking_date(value: datetime.date) -> str:
     )
 
 
+def _parse_relative_hour_offset(
+    normalized_message: str,
+) -> timedelta | None:
+    match = re.fullmatch(
+        r"(?P<amount>\d+)\s+heures?\s+plus\s+"
+        r"(?P<direction>tard|tot)",
+        normalized_message,
+    )
+
+    if match is None:
+        return None
+
+    amount = int(match.group("amount"))
+    direction = match.group("direction")
+    signed_hours = amount if direction == "tard" else -amount
+
+    return timedelta(hours=signed_hours)
+
+
 def resolve_relative_reference(
     *,
     message: str,
@@ -44,6 +64,31 @@ def resolve_relative_reference(
 ) -> str:
     """Resout les references conversationnelles relatives."""
     normalized_message = normalize_text(message)
+    relative_hour_offset = _parse_relative_hour_offset(
+        normalized_message,
+    )
+
+    if relative_hour_offset is not None:
+        if not context:
+            return message
+
+        previous_start_at = context.get("previous_start_at")
+
+        if not previous_start_at:
+            return message
+
+        try:
+            previous_start = datetime.fromisoformat(
+                str(previous_start_at),
+            )
+        except ValueError:
+            return message
+
+        timezone = ZoneInfo(timezone_name)
+        local_previous_start = previous_start.astimezone(timezone)
+        resolved_start = local_previous_start + relative_hour_offset
+
+        return resolved_start.strftime("%Hh%M")
 
     if normalized_message in {
         "a la meme heure",
