@@ -46,3 +46,24 @@ def extract_selected_slot_index(message: str) -> int | None:
         return int(numeric_match.group(1))
 
     return None
+
+
+def extract_selected_slot_time(message: str) -> str | None:
+    text = message.lower().strip()
+
+    match = re.search(
+        r"\b(?:celui|celle|creneau|créneau)"
+        r"(?:\s+(?:de|a|à))?\s+"
+        r"(?P<hour>[01]?\d|2[0-3])"
+        r"(?:h|:)"
+        r"(?P<minute>[0-5]\d)?\b",
+        text,
+    )
+
+    if match is None:
+        return None
+
+    hour = int(match.group("hour"))
+    minute = int(match.group("minute") or 0)
+
+    return f"{hour:02d}h{minute:02d}"

@@ -33,7 +33,10 @@ from app.ai.practitioner_matcher import (
     find_practitioner_in_message,
 )
 from app.ai.schemas import ConversationChannel, ConversationResult
-from app.ai.slot_selection import extract_selected_slot_index
+from app.ai.slot_selection import (
+    extract_selected_slot_index,
+    extract_selected_slot_time,
+)
 from app.appointment_service import create_appointment_record
 from app.db import connection
 from app.practitioner_service import list_practitioners
@@ -424,6 +427,7 @@ async def handle_booking_time_response(
         preference = None
 
         selected_slot_index = extract_selected_slot_index(message)
+        selected_slot_time = extract_selected_slot_time(message)
         interpretation = None
 
         if selected_slot_index is None:
@@ -442,9 +446,23 @@ async def handle_booking_time_response(
 
             selected_slot_index = interpretation.selected_slot_index
 
-        if selected_slot_index is not None:
-            suggested_slots = context.get("suggested_slots", [])
+        suggested_slots = context.get("suggested_slots", [])
+        selected_slot = None
 
+        if selected_slot_time is not None:
+            for suggested_slot in suggested_slots:
+                suggested_start = datetime.fromisoformat(
+                    suggested_slot["start_at"],
+                )
+
+                if (
+                    suggested_start.strftime("%Hh%M")
+                    == selected_slot_time
+                ):
+                    selected_slot = suggested_slot
+                    break
+
+        elif selected_slot_index is not None:
             if selected_slot_index == -1:
                 slot_position = len(suggested_slots) - 1
             else:
@@ -452,6 +470,8 @@ async def handle_booking_time_response(
 
             if 0 <= slot_position < len(suggested_slots):
                 selected_slot = suggested_slots[slot_position]
+
+        if selected_slot is not None:
                 selected_start = datetime.fromisoformat(
                     selected_slot["start_at"]
                 )
