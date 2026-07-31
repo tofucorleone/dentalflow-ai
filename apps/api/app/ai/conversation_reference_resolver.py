@@ -12,6 +12,14 @@ from app.ai.booking_datetime import (
 )
 
 
+NUMBER_WORDS = {
+    "un": 1,
+    "une": 1,
+    "deux": 2,
+    "trois": 3,
+}
+
+
 MONTH_NAMES = {
     1: "janvier",
     2: "fevrier",
@@ -40,7 +48,7 @@ def _parse_relative_time_offset(
     normalized_message: str,
 ) -> timedelta | None:
     match = re.fullmatch(
-        r"(?P<amount>\d+)\s+"
+        r"(?P<amount>\d+|un|une|deux|trois)\s+"
         r"(?P<unit>heures?|minutes?)\s+plus\s+"
         r"(?P<direction>tard|tot)",
         normalized_message,
@@ -49,7 +57,12 @@ def _parse_relative_time_offset(
     if match is None:
         return None
 
-    amount = int(match.group("amount"))
+    raw_amount = match.group("amount")
+
+    if raw_amount.isdigit():
+        amount = int(raw_amount)
+    else:
+        amount = NUMBER_WORDS[raw_amount]
     unit = match.group("unit")
     direction = match.group("direction")
     signed_amount = amount if direction == "tard" else -amount
