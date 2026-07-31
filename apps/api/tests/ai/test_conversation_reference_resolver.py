@@ -156,3 +156,25 @@ def test_resolve_in_two_hours_from_previous_start_at() -> None:
     )
 
     assert result == "16h15"
+
+
+def test_resolve_about_time_returns_original_message() -> None:
+    result = resolve_relative_reference(
+        message="vers 15h",
+        context={
+            "previous_start_at": "2026-08-01T13:15:00+00:00",
+        },
+    )
+
+    assert result == "vers 15h"
+
+
+def test_resolve_in_one_hour_from_previous_start_at() -> None:
+    result = resolve_relative_reference(
+        message="dans une heure",
+        context={
+            "previous_start_at": "2026-08-01T13:15:00+00:00",
+        },
+    )
+
+    assert result == "15h15"
