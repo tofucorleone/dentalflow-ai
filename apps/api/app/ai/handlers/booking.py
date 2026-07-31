@@ -444,7 +444,11 @@ async def handle_booking_time_response(
 
         if selected_slot_index is not None:
             suggested_slots = context.get("suggested_slots", [])
-            slot_position = selected_slot_index - 1
+
+            if selected_slot_index == -1:
+                slot_position = len(suggested_slots) - 1
+            else:
+                slot_position = selected_slot_index - 1
 
             if 0 <= slot_position < len(suggested_slots):
                 selected_slot = suggested_slots[slot_position]

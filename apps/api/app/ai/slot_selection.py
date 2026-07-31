@@ -4,6 +4,12 @@ import re
 def extract_selected_slot_index(message: str) -> int | None:
     text = message.lower().strip()
 
+    if re.search(
+        r"\b(?:le|la)\s+(?:dernier|dernière)\b",
+        text,
+    ):
+        return -1
+
     ordinal_patterns = [
         (
             r"\b(?:le|la)\s+(?:premier|première)\b"
