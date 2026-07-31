@@ -33,3 +33,11 @@ def test_parse_after_work_preference() -> None:
     assert preference.earliest == time(17, 0)
     assert preference.latest == time(20, 0)
     assert preference.exact_time is None
+
+
+def test_parse_after_boulot_preference() -> None:
+    preference = parse_time_preference("après le boulot")
+
+    assert preference.earliest == time(17, 0)
+    assert preference.latest == time(20, 0)
+    assert preference.exact_time is None
