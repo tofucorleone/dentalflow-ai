@@ -54,8 +54,20 @@ def _parse_relative_time_offset(
         normalized_message,
     )
 
-    if match is None:
-        return None
+    if match is not None:
+        direction = match.group("direction")
+    else:
+        match = re.fullmatch(
+            r"dans\s+"
+            r"(?P<amount>\d+|un|une|deux|trois)\s+"
+            r"(?P<unit>heures?|minutes?)",
+            normalized_message,
+        )
+
+        if match is None:
+            return None
+
+        direction = "tard"
 
     raw_amount = match.group("amount")
 
@@ -63,8 +75,8 @@ def _parse_relative_time_offset(
         amount = int(raw_amount)
     else:
         amount = NUMBER_WORDS[raw_amount]
+
     unit = match.group("unit")
-    direction = match.group("direction")
     signed_amount = amount if direction == "tard" else -amount
 
     if unit.startswith("heure"):

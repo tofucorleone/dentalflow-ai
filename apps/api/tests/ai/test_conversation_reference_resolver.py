@@ -145,3 +145,14 @@ def test_resolve_two_hours_later_written_in_words() -> None:
     )
 
     assert result == "16h15"
+
+
+def test_resolve_in_two_hours_from_previous_start_at() -> None:
+    result = resolve_relative_reference(
+        message="dans deux heures",
+        context={
+            "previous_start_at": "2026-08-01T13:15:00+00:00",
+        },
+    )
+
+    assert result == "16h15"
