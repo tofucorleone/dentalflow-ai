@@ -68,3 +68,25 @@ def test_resolve_one_hour_earlier_from_previous_start_at() -> None:
     )
 
     assert result == "13h15"
+
+
+def test_resolve_day_after_next_from_previous_start_at() -> None:
+    result = resolve_relative_reference(
+        message="le surlendemain",
+        context={
+            "previous_start_at": "2026-08-01T13:15:00+00:00",
+        },
+    )
+
+    assert result == "3 aout 2026"
+
+
+def test_resolve_day_before_previous_from_previous_start_at() -> None:
+    result = resolve_relative_reference(
+        message="l'avant-veille",
+        context={
+            "previous_start_at": "2026-08-01T13:15:00+00:00",
+        },
+    )
+
+    assert result == "30 juillet 2026"

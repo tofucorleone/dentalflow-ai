@@ -77,8 +77,12 @@ def resolve_relative_reference(
 
     if normalized_message == "le lendemain":
         relative_days = 1
+    elif normalized_message == "le surlendemain":
+        relative_days = 2
     elif normalized_message == "la veille":
         relative_days = -1
+    elif normalized_message == "l'avant-veille":
+        relative_days = -2
     else:
         return message
 
