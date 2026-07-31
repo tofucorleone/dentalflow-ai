@@ -36,11 +36,12 @@ def _format_booking_date(value: datetime.date) -> str:
     )
 
 
-def _parse_relative_hour_offset(
+def _parse_relative_time_offset(
     normalized_message: str,
 ) -> timedelta | None:
     match = re.fullmatch(
-        r"(?P<amount>\d+)\s+heures?\s+plus\s+"
+        r"(?P<amount>\d+)\s+"
+        r"(?P<unit>heures?|minutes?)\s+plus\s+"
         r"(?P<direction>tard|tot)",
         normalized_message,
     )
@@ -49,10 +50,14 @@ def _parse_relative_hour_offset(
         return None
 
     amount = int(match.group("amount"))
+    unit = match.group("unit")
     direction = match.group("direction")
-    signed_hours = amount if direction == "tard" else -amount
+    signed_amount = amount if direction == "tard" else -amount
 
-    return timedelta(hours=signed_hours)
+    if unit.startswith("heure"):
+        return timedelta(hours=signed_amount)
+
+    return timedelta(minutes=signed_amount)
 
 
 def resolve_relative_reference(
@@ -64,11 +69,11 @@ def resolve_relative_reference(
 ) -> str:
     """Resout les references conversationnelles relatives."""
     normalized_message = normalize_text(message)
-    relative_hour_offset = _parse_relative_hour_offset(
+    relative_time_offset = _parse_relative_time_offset(
         normalized_message,
     )
 
-    if relative_hour_offset is not None:
+    if relative_time_offset is not None:
         if not context:
             return message
 
@@ -86,7 +91,7 @@ def resolve_relative_reference(
 
         timezone = ZoneInfo(timezone_name)
         local_previous_start = previous_start.astimezone(timezone)
-        resolved_start = local_previous_start + relative_hour_offset
+        resolved_start = local_previous_start + relative_time_offset
 
         return resolved_start.strftime("%Hh%M")
 

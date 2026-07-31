@@ -112,3 +112,25 @@ def test_resolve_two_hours_earlier_from_previous_start_at() -> None:
     )
 
     assert result == "12h15"
+
+
+def test_resolve_thirty_minutes_later_from_previous_start_at() -> None:
+    result = resolve_relative_reference(
+        message="30 minutes plus tard",
+        context={
+            "previous_start_at": "2026-08-01T13:15:00+00:00",
+        },
+    )
+
+    assert result == "14h45"
+
+
+def test_resolve_thirty_minutes_earlier_from_previous_start_at() -> None:
+    result = resolve_relative_reference(
+        message="30 minutes plus tôt",
+        context={
+            "previous_start_at": "2026-08-01T13:15:00+00:00",
+        },
+    )
+
+    assert result == "13h45"
