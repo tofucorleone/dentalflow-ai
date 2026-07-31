@@ -98,10 +98,6 @@ async def handle_booking(
         )
 
     patient_id = patient["id"]
-    message = resolve_relative_reference(
-        message=message,
-        context=current_context,
-    )
 
     parts = extract_message_parts(message)
     treatment = await find_treatment_in_message(
@@ -189,6 +185,10 @@ async def handle_booking_date_response(
     message: str,
     current_context: dict[str, Any] | None = None,
 ) -> ConversationResult:
+    message = resolve_relative_reference(
+        message=message,
+        context=current_context,
+    )
     parts = extract_message_parts(message)
     context = dict(current_context or {})
 
@@ -325,6 +325,10 @@ async def handle_booking_time_response(
     message: str,
     current_context: dict[str, Any] | None = None,
 ) -> ConversationResult:
+    message = resolve_relative_reference(
+        message=message,
+        context=current_context,
+    )
     parts = extract_message_parts(message)
 
     print(
@@ -342,6 +346,24 @@ async def handle_booking_time_response(
 
     if parts.date_text is not None:
         context["requested_date_text"] = parts.date_text
+
+        if parts.time_text is None:
+            await save_conversation_state(
+                clinic_id=clinic_id,
+                patient_id=patient["id"],
+                channel=channel,
+                state="waiting_for_time",
+                context=context,
+            )
+
+            return ConversationResult(
+                intent="book_appointment",
+                patient_id=patient["id"],
+                reply=(
+                    f"Très bien, vous souhaitez venir {parts.date_text}. "
+                    "À quelle heure souhaitez-vous le rendez-vous ?"
+                ),
+            )
 
     if parts.any_practitioner:
         context.pop("practitioner_id", None)

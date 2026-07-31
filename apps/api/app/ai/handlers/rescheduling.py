@@ -44,11 +44,6 @@ async def handle_rescheduling(
         ZoneInfo("Africa/Algiers"),
     )
 
-    message = resolve_relative_reference(
-        message=message,
-        context=current_context,
-    )
-
     parts = extract_message_parts(message)
 
     base_context = {
@@ -127,6 +122,11 @@ async def handle_rescheduling_date_response(
     message: str,
     current_context: dict | None = None,
 ) -> ConversationResult:
+    message = resolve_relative_reference(
+        message=message,
+        context=current_context,
+    )
+
     parts = extract_message_parts(message)
     requested_date = parts.date_text or message.strip()
     context = dict(current_context or {})
@@ -197,6 +197,11 @@ async def handle_rescheduling_time_response(
         TimePreferenceError,
         format_time_preference_label,
         parse_time_preference,
+    )
+
+    message = resolve_relative_reference(
+        message=message,
+        context=current_context,
     )
 
     parts = extract_message_parts(message)

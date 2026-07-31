@@ -151,6 +151,16 @@ async def _process_with_llm_fallback(
     return None
 
 
+def _has_new_explicit_intent(intent: str) -> bool:
+    interruptible_intents = {
+        "book_appointment",
+        "cancel_appointment",
+        "reschedule_appointment",
+    }
+
+    return intent in interruptible_intents
+
+
 async def _process_conversation_core(
     conversation: ConversationInput,
 ) -> ConversationResult:
@@ -274,16 +284,7 @@ async def _process_conversation_core(
             },
         )
 
-    interruptible_intents = {
-        "book_appointment",
-        "cancel_appointment",
-        "reschedule_appointment",
-    }
-
-    has_new_explicit_intent = (
-        intent in interruptible_intents
-        and intent != active_intent
-    )
+    has_new_explicit_intent = _has_new_explicit_intent(intent)
 
     print(
         "[DEBUG][PROCESSOR]",
