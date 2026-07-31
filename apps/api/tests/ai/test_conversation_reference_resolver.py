@@ -57,3 +57,14 @@ def test_resolve_one_hour_later_from_previous_start_at() -> None:
     )
 
     assert result == "15h15"
+
+
+def test_resolve_one_hour_earlier_from_previous_start_at() -> None:
+    result = resolve_relative_reference(
+        message="une heure plus tôt",
+        context={
+            "previous_start_at": "2026-08-01T13:15:00+00:00",
+        },
+    )
+
+    assert result == "13h15"

@@ -48,6 +48,7 @@ def resolve_relative_reference(
     if normalized_message in {
         "a la meme heure",
         "une heure plus tard",
+        "une heure plus tot",
     }:
         if not context:
             return message
@@ -69,6 +70,8 @@ def resolve_relative_reference(
 
         if normalized_message == "une heure plus tard":
             local_previous_start += timedelta(hours=1)
+        elif normalized_message == "une heure plus tot":
+            local_previous_start -= timedelta(hours=1)
 
         return local_previous_start.strftime("%Hh%M")
 
