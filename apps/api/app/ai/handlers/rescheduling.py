@@ -9,6 +9,7 @@ from app.ai.conversation_reference_resolver import (
     resolve_relative_reference,
 )
 from app.ai.schemas import ConversationChannel, ConversationResult
+from app.ai.slot_selection import extract_selected_slot_index
 from app.appointment_service import get_next_patient_appointment
 
 
@@ -244,6 +245,23 @@ async def handle_rescheduling_time_response(
             ),
             requires_human=True,
         )
+
+    selected_slot_index = extract_selected_slot_index(message)
+
+    if selected_slot_index is not None:
+        suggested_slots = context.get("suggested_slots", [])
+        slot_position = selected_slot_index - 1
+
+        if 0 <= slot_position < len(suggested_slots):
+            selected_slot = suggested_slots[slot_position]
+            selected_start = datetime.fromisoformat(
+                selected_slot["start_at"],
+            )
+
+            requested_time = selected_start.strftime("%Hh%M")
+            practitioner_id = UUID(
+                selected_slot["practitioner_id"],
+            )
 
     try:
         preference = parse_time_preference(requested_time)
