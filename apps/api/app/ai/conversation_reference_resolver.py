@@ -45,7 +45,10 @@ def resolve_relative_reference(
     """Resout les references conversationnelles relatives."""
     normalized_message = normalize_text(message)
 
-    if normalized_message == "a la meme heure":
+    if normalized_message in {
+        "a la meme heure",
+        "une heure plus tard",
+    }:
         if not context:
             return message
 
@@ -63,6 +66,9 @@ def resolve_relative_reference(
 
         timezone = ZoneInfo(timezone_name)
         local_previous_start = previous_start.astimezone(timezone)
+
+        if normalized_message == "une heure plus tard":
+            local_previous_start += timedelta(hours=1)
 
         return local_previous_start.strftime("%Hh%M")
 
