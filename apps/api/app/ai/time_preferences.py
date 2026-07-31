@@ -65,6 +65,18 @@ _PERIODS: dict[str, TimePreference] = {
         earliest=time(17, 0),
         latest=time(20, 0),
     ),
+    "en sortant du travail": TimePreference(
+        earliest=time(17, 0),
+        latest=time(20, 0),
+    ),
+    "quand je finis le travail": TimePreference(
+        earliest=time(17, 0),
+        latest=time(20, 0),
+    ),
+    "apres les cours": TimePreference(
+        earliest=time(17, 0),
+        latest=time(20, 0),
+    ),
     "soir": TimePreference(
         earliest=time(18, 0),
         latest=time(22, 0),
