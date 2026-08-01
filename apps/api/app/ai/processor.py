@@ -163,19 +163,52 @@ def _has_new_explicit_intent(intent: str) -> bool:
     return intent in interruptible_intents
 
 
-async def _process_conversation_core(
+async def _detect_intent_hybrid(
     conversation: ConversationInput,
-) -> ConversationResult:
+) -> str:
+    """
+    Utilise d'abord les règles DentalFlow.
+
+    Le LLM intervient uniquement lorsque les règles ne reconnaissent
+    aucune intention avec certitude. Il ne réalise aucune action métier.
+    """
     intent = detect_intent(conversation.message)
 
-    if intent == "unknown":
-        detected_treatment = await find_treatment_in_message(
+    if intent != "unknown":
+        return intent
+
+    detected_treatment = await find_treatment_in_message(
+        clinic_id=conversation.clinic_id,
+        message=conversation.message,
+    )
+
+    if detected_treatment is not None:
+        return "book_appointment"
+
+    try:
+        interpretation = await interpret_conversation_message(
             clinic_id=conversation.clinic_id,
             message=conversation.message,
         )
+    except (
+        LlmConfigurationError,
+        ConversationInterpretationError,
+    ):
+        return "unknown"
 
-        if detected_treatment is not None:
-            intent = "book_appointment"
+    if (
+        interpretation.intent == "unknown"
+        or interpretation.confidence < 0.75
+    ):
+        return "unknown"
+
+    return interpretation.intent
+
+
+async def _process_conversation_core(
+    conversation: ConversationInput,
+) -> ConversationResult:
+    intent = await _detect_intent_hybrid(conversation)
 
     patient = await find_patient_by_phone(
         clinic_id=conversation.clinic_id,
