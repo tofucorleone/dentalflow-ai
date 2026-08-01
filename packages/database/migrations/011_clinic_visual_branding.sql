@@ -1,0 +1,8 @@
+BEGIN;
+
+ALTER TABLE clinics
+    ADD COLUMN IF NOT EXISTS logo_url TEXT,
+    ADD COLUMN IF NOT EXISTS background_image_url TEXT,
+    ADD COLUMN IF NOT EXISTS primary_color TEXT NOT NULL DEFAULT '#1b6f8f';
+
+COMMIT;

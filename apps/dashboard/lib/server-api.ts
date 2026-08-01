@@ -38,3 +38,26 @@ export async function backendFetch(
     cache: "no-store",
   });
 }
+
+export type ClinicBranding = {
+  id: string;
+  name: string;
+  display_name: string;
+  software_name: string;
+  logo_url: string | null;
+  background_image_url: string | null;
+  primary_color: string;
+};
+
+export async function getClinicBranding(): Promise<ClinicBranding> {
+  const response = await backendFetch("/clinic-branding");
+
+  if (!response.ok) {
+    throw new Error(
+      `API ${response.status}: ${await response.text()}`,
+    );
+  }
+
+  return response.json() as Promise<ClinicBranding>;
+}
+

@@ -26,6 +26,7 @@ from app.practitioner_service import (
 from app.treatment_service import list_active_treatments
 from app.schemas import (
     AppointmentIn,
+    ClinicBrandingPatch,
     AppointmentRescheduleIn,
     AvailabilityIn,
     PatientIn,
@@ -47,12 +48,139 @@ async def list_clinics() -> list[dict]:
         async with conn.cursor() as cur:
             await cur.execute(
                 """
-                SELECT id, name, slug, timezone, language, active, created_at
+                SELECT
+                    id,
+                    name,
+                    display_name,
+                    software_name,
+                    slug,
+                    timezone,
+                    language,
+                    active,
+                    created_at
                 FROM clinics
                 ORDER BY name
                 """
             )
             return await cur.fetchall()
+
+
+@router.get("/clinic-branding", tags=["Cliniques"])
+async def get_clinic_branding(
+    current_clinic: UUID = Depends(clinic_id),
+) -> dict:
+    async with connection() as conn:
+        async with conn.cursor() as cur:
+            await cur.execute(
+                """
+                SELECT
+                    id,
+                    name,
+                    display_name,
+                    software_name,
+                    logo_url,
+                    background_image_url,
+                    primary_color
+                FROM clinics
+                WHERE id = %s
+                """,
+                (current_clinic,),
+            )
+
+            clinic = await cur.fetchone()
+
+            if clinic is None:
+                raise HTTPException(
+                    status_code=status.HTTP_404_NOT_FOUND,
+                    detail="Clinique introuvable.",
+                )
+
+            return clinic
+
+
+@router.patch("/clinic-branding", tags=["Cliniques"])
+async def update_clinic_branding(
+    payload: ClinicBrandingPatch,
+    current_clinic: UUID = Depends(clinic_id),
+) -> dict:
+    updates = payload.model_dump(exclude_unset=True)
+
+    if not updates:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Aucune modification fournie.",
+        )
+
+    fields = []
+    values = []
+
+    for field in (
+        "display_name",
+        "software_name",
+        "logo_url",
+        "background_image_url",
+        "primary_color",
+    ):
+        if field not in updates:
+            continue
+
+        value = updates[field]
+
+        if value is None:
+            continue
+
+        normalized_value = value.strip()
+
+        if (
+            field in {"display_name", "software_name", "primary_color"}
+            and not normalized_value
+        ):
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"Le champ {field} ne peut pas être vide.",
+            )
+
+        fields.append(f"{field} = %s")
+        values.append(normalized_value or None)
+
+    if not fields:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Aucune modification valide fournie.",
+        )
+
+    fields.append("updated_at = NOW()")
+    values.append(current_clinic)
+
+    async with connection() as conn:
+        async with conn.cursor() as cur:
+            await cur.execute(
+                f"""
+                UPDATE clinics
+                SET {", ".join(fields)}
+                WHERE id = %s
+                RETURNING
+                    id,
+                    name,
+                    display_name,
+                    software_name,
+                    logo_url,
+                    background_image_url,
+                    primary_color
+                """,
+                values,
+            )
+
+            clinic = await cur.fetchone()
+
+            if clinic is None:
+                raise HTTPException(
+                    status_code=status.HTTP_404_NOT_FOUND,
+                    detail="Clinique introuvable.",
+                )
+
+            await conn.commit()
+            return clinic
 
 
 @router.get("/treatments", tags=["Soins"])

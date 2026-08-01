@@ -458,3 +458,87 @@
 .calendar-slot:hover {
   background: #eef8fa;
 }
+
+.settings-panel {
+  max-width: 760px;
+}
+
+.settings-heading {
+  margin-bottom: 28px;
+}
+
+.settings-heading h2 {
+  margin: 0 0 8px;
+}
+
+.settings-heading p {
+  margin: 0;
+  color: var(--muted);
+}
+
+.settings-form {
+  display: grid;
+  gap: 22px;
+}
+
+.form-field {
+  display: grid;
+  gap: 9px;
+}
+
+.form-field span {
+  font-size: 14px;
+  font-weight: 700;
+}
+
+.form-field input {
+  width: 100%;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: #fff;
+  color: var(--text);
+  padding: 13px 14px;
+  font: inherit;
+}
+
+.form-field input:focus {
+  outline: 2px solid rgba(25, 157, 191, 0.18);
+  border-color: var(--primary);
+}
+
+.form-actions {
+  display: flex;
+  justify-content: flex-end;
+}
+
+.primary-button {
+  border: 0;
+  border-radius: 12px;
+  background: var(--primary);
+  color: #fff;
+  padding: 12px 20px;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.primary-button:disabled {
+  cursor: wait;
+  opacity: 0.65;
+}
+
+.form-message {
+  margin: 0;
+  border-radius: 10px;
+  padding: 11px 13px;
+  font-size: 14px;
+}
+
+.form-message.success {
+  background: rgba(36, 196, 134, 0.12);
+  color: #08764d;
+}
+
+.form-message.error {
+  background: rgba(220, 38, 38, 0.1);
+  color: #b42318;
+}

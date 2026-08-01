@@ -6,6 +6,31 @@ from uuid import UUID
 from pydantic import BaseModel, Field, model_validator
 
 
+class ClinicBrandingPatch(BaseModel):
+    display_name: str | None = Field(
+        default=None,
+        min_length=1,
+        max_length=120,
+    )
+    software_name: str | None = Field(
+        default=None,
+        min_length=1,
+        max_length=120,
+    )
+    logo_url: str | None = Field(
+        default=None,
+        max_length=500,
+    )
+    background_image_url: str | None = Field(
+        default=None,
+        max_length=500,
+    )
+    primary_color: str | None = Field(
+        default=None,
+        pattern=r"^#[0-9A-Fa-f]{6}$",
+    )
+
+
 class TreatmentIn(BaseModel):
     name: str = Field(min_length=2, max_length=120)
     description: str | None = Field(default=None, max_length=1000)

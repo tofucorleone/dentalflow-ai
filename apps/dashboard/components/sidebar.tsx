@@ -5,9 +5,11 @@ import {
   Stethoscope,
   Users,
   UserRound,
+  Settings,
 } from "lucide-react";
 
 import { LogoutButton } from "@/components/logout-button";
+import { getClinicBranding } from "@/lib/server-api";
 
 const links = [
   { href: "/", label: "Tableau de bord", icon: LayoutDashboard },
@@ -15,17 +17,23 @@ const links = [
   { href: "/patients", label: "Patients", icon: Users },
   { href: "/treatments", label: "Soins", icon: Stethoscope },
   { href: "/practitioners", label: "Praticiens", icon: UserRound },
+  { href: "/settings", label: "Paramètres", icon: Settings },
 ];
 
-export function Sidebar() {
+export async function Sidebar() {
+  const branding = await getClinicBranding();
+  const softwareInitial = (
+    branding.software_name.trim().charAt(0) || "D"
+  ).toUpperCase();
+
   return (
     <aside className="sidebar">
       <div className="brand">
-        <div className="brand-mark">D</div>
+        <div className="brand-mark">{softwareInitial}</div>
 
         <div>
-          <strong>DentalFlow AI</strong>
-          <span>Clinique Démo</span>
+          <strong>{branding.software_name}</strong>
+          <span>{branding.display_name}</span>
         </div>
       </div>
 
