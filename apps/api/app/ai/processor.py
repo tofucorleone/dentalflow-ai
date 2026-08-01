@@ -395,6 +395,18 @@ async def _process_conversation_core(
                         current_context=context,
                     )
 
+                if (
+                    correction_parts.practitioner_text is not None
+                    or correction_parts.any_practitioner
+                ):
+                    return await handle_booking_time_response(
+                        clinic_id=conversation.clinic_id,
+                        channel=conversation.channel,
+                        patient=patient,
+                        message=conversation.message,
+                        current_context=context,
+                    )
+
             if active_workflow == "reschedule_appointment":
                 if correction_parts.date_text is not None:
                     return await handle_rescheduling_date_response(

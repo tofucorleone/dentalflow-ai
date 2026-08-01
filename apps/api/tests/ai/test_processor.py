@@ -295,3 +295,103 @@ def test_booking_confirmation_correction_routes_to_time_response(
         current_context=context,
     )
     confirmation_mock.assert_not_awaited()
+
+
+def test_booking_confirmation_correction_routes_to_practitioner_response(
+    monkeypatch,
+):
+    import asyncio
+    from unittest.mock import AsyncMock
+    from uuid import uuid4
+
+    from app.ai import processor
+    from app.ai.schemas import ConversationInput, ConversationResult
+
+    clinic_id = uuid4()
+    patient_id = uuid4()
+
+    conversation = ConversationInput(
+        clinic_id=clinic_id,
+        channel="web",
+        sender_phone="+213555123456",
+        message="Finalement avec le Dr Martin",
+    )
+
+    patient = {
+        "id": patient_id,
+        "full_name": "Patient Test",
+    }
+
+    context = {
+        "intent": "book_appointment",
+        "requested_date_text": "mardi",
+        "requested_time_text": "15h00",
+        "practitioner_id": str(uuid4()),
+        "start_at": "2026-08-04T15:00:00+01:00",
+        "end_at": "2026-08-04T15:30:00+01:00",
+    }
+
+    conversation_state = {
+        "state": "waiting_for_confirmation",
+        "context": context,
+    }
+
+    find_patient_mock = AsyncMock(return_value=patient)
+    get_state_mock = AsyncMock(return_value=conversation_state)
+
+    practitioner_response_mock = AsyncMock(
+        return_value=ConversationResult(
+            intent="book_appointment",
+            patient_id=patient_id,
+            reply="Très bien, avec le Dr Martin.",
+        )
+    )
+
+    confirmation_mock = AsyncMock()
+
+    monkeypatch.setattr(
+        processor,
+        "detect_intent",
+        lambda message: "unknown",
+    )
+    monkeypatch.setattr(
+        processor,
+        "find_treatment_in_message",
+        AsyncMock(return_value=None),
+    )
+    monkeypatch.setattr(
+        processor,
+        "find_patient_by_phone",
+        find_patient_mock,
+    )
+    monkeypatch.setattr(
+        processor,
+        "get_conversation_state",
+        get_state_mock,
+    )
+    monkeypatch.setattr(
+        processor,
+        "handle_booking_time_response",
+        practitioner_response_mock,
+    )
+    monkeypatch.setattr(
+        processor,
+        "handle_booking_confirmation_response",
+        confirmation_mock,
+    )
+
+    result = asyncio.run(
+        processor._process_conversation_core(conversation)
+    )
+
+    assert result.intent == "book_appointment"
+
+    practitioner_response_mock.assert_awaited_once_with(
+        clinic_id=clinic_id,
+        channel=conversation.channel,
+        patient=patient,
+        message="Finalement avec le Dr Martin",
+        current_context=context,
+    )
+
+    confirmation_mock.assert_not_awaited()
