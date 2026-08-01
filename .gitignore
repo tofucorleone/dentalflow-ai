@@ -38,3 +38,5 @@ storage/temp/*
 !storage/temp/.gitkeep
 *.bak
 *.before-*
+
+/storage/branding/
