@@ -22,7 +22,6 @@ from app.ai.handlers.rescheduling import (
 )
 from app.ai.handlers.greeting import handle_greeting
 from app.ai.handlers.treatment_pricing import handle_treatment_pricing
-from app.ai.intent import detect_intent
 from app.ai.message_parser import extract_message_parts
 from app.ai.llm.client import LlmConfigurationError
 from app.ai.llm.chat_model import (
@@ -34,12 +33,12 @@ from app.ai.llm.conversation_interpreter import (
     ConversationInterpretationError,
     interpret_conversation_message,
 )
+from app.ai.orchestrator import orchestrate_conversation_message
 from app.ai.patient_matcher import find_patient_by_phone
 from app.patient_service import (
     update_patient_name,
     upsert_patient_record,
 )
-from app.ai.treatment_matcher import find_treatment_in_message
 from app.ai.schemas import (
     ConversationInput,
     ConversationResult,
@@ -163,52 +162,15 @@ def _has_new_explicit_intent(intent: str) -> bool:
     return intent in interruptible_intents
 
 
-async def _detect_intent_hybrid(
-    conversation: ConversationInput,
-) -> str:
-    """
-    Utilise d'abord les règles DentalFlow.
-
-    Le LLM intervient uniquement lorsque les règles ne reconnaissent
-    aucune intention avec certitude. Il ne réalise aucune action métier.
-    """
-    intent = detect_intent(conversation.message)
-
-    if intent != "unknown":
-        return intent
-
-    detected_treatment = await find_treatment_in_message(
-        clinic_id=conversation.clinic_id,
-        message=conversation.message,
-    )
-
-    if detected_treatment is not None:
-        return "book_appointment"
-
-    try:
-        interpretation = await interpret_conversation_message(
-            clinic_id=conversation.clinic_id,
-            message=conversation.message,
-        )
-    except (
-        LlmConfigurationError,
-        ConversationInterpretationError,
-    ):
-        return "unknown"
-
-    if (
-        interpretation.intent == "unknown"
-        or interpretation.confidence < 0.75
-    ):
-        return "unknown"
-
-    return interpretation.intent
-
-
 async def _process_conversation_core(
     conversation: ConversationInput,
 ) -> ConversationResult:
-    intent = await _detect_intent_hybrid(conversation)
+    orchestration = await orchestrate_conversation_message(
+        conversation,
+    )
+
+    intent = orchestration.intent
+    routed_message = orchestration.normalized_message
 
     patient = await find_patient_by_phone(
         clinic_id=conversation.clinic_id,
@@ -542,7 +504,7 @@ async def _process_conversation_core(
             clinic_id=conversation.clinic_id,
             channel=conversation.channel,
             patient=patient,
-            message=conversation.message,
+            message=routed_message,
         )
 
     if intent == "cancel_appointment":
@@ -557,7 +519,7 @@ async def _process_conversation_core(
             clinic_id=conversation.clinic_id,
             channel=conversation.channel,
             patient=patient,
-            message=conversation.message,
+            message=routed_message,
         )
 
     if intent == "clinic_information":
