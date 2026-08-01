@@ -1,3 +1,4 @@
+from app.ai.conversation_corrections import is_correction_message
 from app.ai.conversation_state import (
     append_conversation_turn,
     get_conversation_state,
@@ -22,6 +23,7 @@ from app.ai.handlers.rescheduling import (
 from app.ai.handlers.greeting import handle_greeting
 from app.ai.handlers.treatment_pricing import handle_treatment_pricing
 from app.ai.intent import detect_intent
+from app.ai.message_parser import extract_message_parts
 from app.ai.llm.client import LlmConfigurationError
 from app.ai.llm.chat_model import (
     ChatReplyContext,
@@ -367,6 +369,50 @@ async def _process_conversation_core(
         and not has_new_explicit_intent
     ):
         context = conversation_state["context"] or {}
+
+        if is_correction_message(conversation.message):
+            correction_parts = extract_message_parts(
+                conversation.message,
+            )
+            active_workflow = context.get("intent")
+
+            if active_workflow == "book_appointment":
+                if correction_parts.date_text is not None:
+                    return await handle_booking_date_response(
+                        clinic_id=conversation.clinic_id,
+                        channel=conversation.channel,
+                        patient=patient,
+                        message=conversation.message,
+                        current_context=context,
+                    )
+
+                if correction_parts.time_text is not None:
+                    return await handle_booking_time_response(
+                        clinic_id=conversation.clinic_id,
+                        channel=conversation.channel,
+                        patient=patient,
+                        message=conversation.message,
+                        current_context=context,
+                    )
+
+            if active_workflow == "reschedule_appointment":
+                if correction_parts.date_text is not None:
+                    return await handle_rescheduling_date_response(
+                        clinic_id=conversation.clinic_id,
+                        channel=conversation.channel,
+                        patient=patient,
+                        message=conversation.message,
+                        current_context=context,
+                    )
+
+                if correction_parts.time_text is not None:
+                    return await handle_rescheduling_time_response(
+                        clinic_id=conversation.clinic_id,
+                        channel=conversation.channel,
+                        patient=patient,
+                        message=conversation.message,
+                        current_context=context,
+                    )
 
         if context.get("intent") == "cancel_appointment":
             return await handle_cancellation_confirmation(
