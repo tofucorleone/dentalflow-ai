@@ -7,6 +7,7 @@ from app.core import router as core_router
 from app.patient360 import router as patient360_router
 from app.db import close_pool, connection, open_pool
 from app.auth import router as auth_router
+from app.branding import router as branding_router
 
 @asynccontextmanager
 async def lifespan(_: FastAPI):
@@ -38,6 +39,7 @@ async def health() -> dict:
 app.include_router(core_router)
 app.include_router(patient360_router)
 app.include_router(auth_router)
+app.include_router(branding_router)
 app.include_router(documents_router)
 app.include_router(ai_router)
 app.include_router(document_ai_router)

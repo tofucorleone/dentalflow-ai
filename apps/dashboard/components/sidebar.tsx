@@ -29,7 +29,16 @@ export async function Sidebar() {
   return (
     <aside className="sidebar">
       <div className="brand">
-        <div className="brand-mark">{softwareInitial}</div>
+        <div className="brand-mark">
+          {branding.logo_url ? (
+            <img
+              src="/api/clinic-branding/logo"
+              alt={`Logo ${branding.display_name}`}
+            />
+          ) : (
+            softwareInitial
+          )}
+        </div>
 
         <div>
           <strong>{branding.software_name}</strong>

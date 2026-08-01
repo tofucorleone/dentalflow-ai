@@ -542,3 +542,30 @@
   background: rgba(220, 38, 38, 0.1);
   color: #b42318;
 }
+
+.form-field small {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.brand-mark {
+  overflow: hidden;
+}
+
+.brand-mark img {
+  width: 100%;
+  height: 100%;
+  display: block;
+  object-fit: cover;
+}
+
+.brand-mark {
+  overflow: hidden;
+}
+
+.brand-mark img {
+  width: 100%;
+  height: 100%;
+  display: block;
+  object-fit: cover;
+}

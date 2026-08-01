@@ -21,8 +21,58 @@ export function ClinicBrandingForm({
     initialSoftwareName,
   );
   const [saving, setSaving] = useState(false);
+  const [uploadingLogo, setUploadingLogo] = useState(false);
   const [message, setMessage] = useState<string | null>(null);
   const [isError, setIsError] = useState(false);
+
+  async function handleLogoUpload(
+    event: React.ChangeEvent<HTMLInputElement>,
+  ) {
+    const file = event.target.files?.[0];
+
+    if (!file) {
+      return;
+    }
+
+    setUploadingLogo(true);
+    setMessage(null);
+    setIsError(false);
+
+    try {
+      const formData = new FormData();
+      formData.append("file", file);
+
+      const response = await fetch(
+        "/api/clinic-branding/logo",
+        {
+          method: "POST",
+          body: formData,
+        },
+      );
+
+      const payload = await response.json();
+
+      if (!response.ok) {
+        throw new Error(
+          payload.detail ??
+            "Impossible d’enregistrer le logo.",
+        );
+      }
+
+      setMessage("Logo enregistré avec succès.");
+      router.refresh();
+    } catch (error) {
+      setIsError(true);
+      setMessage(
+        error instanceof Error
+          ? error.message
+          : "Une erreur est survenue.",
+      );
+    } finally {
+      setUploadingLogo(false);
+      event.target.value = "";
+    }
+  }
 
   async function handleSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -94,6 +144,19 @@ export function ClinicBrandingForm({
           maxLength={120}
           required
         />
+      </label>
+
+      <label className="form-field">
+        <span>Logo de la clinique</span>
+        <input
+          type="file"
+          accept="image/png,image/jpeg,image/webp"
+          onChange={handleLogoUpload}
+          disabled={uploadingLogo}
+        />
+        <small>
+          PNG, JPEG ou WebP — 5 Mo maximum.
+        </small>
       </label>
 
       {message ? (
