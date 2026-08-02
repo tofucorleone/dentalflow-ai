@@ -14,6 +14,12 @@ class Settings(BaseSettings):
 
     openai_api_key: str | None = None
 
+    twilio_account_sid: str | None = None
+    twilio_auth_token: str | None = None
+
+    twilio_recording_download_timeout: float = 15.0
+    twilio_recording_download_attempts: int = 4
+
 
     model_config = SettingsConfigDict(
         env_file=".env",
