@@ -29,6 +29,7 @@ from app.ai.llm.chat_model import (
     generate_natural_reply,
 )
 from app.ai.llm.history_formatter import format_history_for_llm
+from app.ai.llm.knowledge_fallback import generate_knowledge_fallback
 from app.ai.llm.conversation_interpreter import (
     ConversationInterpretationError,
     interpret_conversation_message,
@@ -157,6 +158,7 @@ def _has_new_explicit_intent(intent: str) -> bool:
         "book_appointment",
         "cancel_appointment",
         "reschedule_appointment",
+        "dental_information",
     }
 
     return intent in interruptible_intents
@@ -496,6 +498,40 @@ async def _process_conversation_core(
                     },
                 )
 
+    if intent == "dental_information":
+        conversation_context = format_history_for_llm(
+            active_context,
+        )
+
+        knowledge_reply = await generate_knowledge_fallback(
+            user_message=conversation.message,
+            conversation_context=conversation_context,
+        )
+
+        if knowledge_reply is not None:
+            return ConversationResult(
+                intent="dental_information",
+                patient_id=patient_id,
+                reply=knowledge_reply,
+                metadata={
+                    "reply_source": "knowledge_fallback",
+                },
+            )
+
+        return ConversationResult(
+            intent="dental_information",
+            patient_id=patient_id,
+            reply=(
+                "Cette question nécessite l'avis d'un professionnel "
+                "du cabinet. Souhaitez-vous être mis en relation "
+                "avec l'équipe ?"
+            ),
+            requires_human=True,
+            metadata={
+                "reply_source": "deterministic_fallback",
+            },
+        )
+
     if intent == "greeting":
         return handle_greeting(patient)
 
@@ -552,6 +588,21 @@ async def _process_conversation_core(
     if llm_result is not None:
         return llm_result
 
+    knowledge_reply = await generate_knowledge_fallback(
+        user_message=conversation.message,
+        conversation_context=conversation_context,
+    )
+
+    if knowledge_reply is not None:
+        return ConversationResult(
+            intent="unknown",
+            patient_id=patient_id,
+            reply=knowledge_reply,
+            metadata={
+                "reply_source": "knowledge_fallback",
+            },
+        )
+
     return ConversationResult(
         intent="unknown",
         patient_id=patient_id,
@@ -559,6 +610,9 @@ async def _process_conversation_core(
             "Je n'ai pas encore compris votre demande. "
             "Pouvez-vous la reformuler ?"
         ),
+        metadata={
+            "reply_source": "deterministic_fallback",
+        },
     )
 
 # CHAT MODEL NATURAL REPLY WRAPPER

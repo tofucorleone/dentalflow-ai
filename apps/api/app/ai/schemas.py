@@ -19,6 +19,7 @@ ConversationIntent = Literal[
     "cancel_appointment",
     "clinic_information",
     "treatment_pricing",
+    "dental_information",
     "human_handoff",
     "patient_registration",
     "unknown",

@@ -86,9 +86,6 @@ async def orchestrate_conversation_message(
             message=original_message,
         )
 
-        if treatment_match is not None:
-            rule_intent = "book_appointment"
-
     interpretation: ConversationInterpretation | None = None
 
     try:
@@ -102,6 +99,19 @@ async def orchestrate_conversation_message(
         ConversationInterpretationError,
     ):
         interpretation = None
+
+    if (
+        rule_intent == "unknown"
+        and treatment_match is not None
+        and (
+            interpretation is None
+            or (
+                interpretation.intent == "book_appointment"
+                and interpretation.confidence >= minimum_confidence
+            )
+        )
+    ):
+        rule_intent = "book_appointment"
 
     # DentalFlow garde la priorité lorsqu'une règle métier reconnaît l'intention.
     if rule_intent != "unknown":

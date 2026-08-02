@@ -73,6 +73,7 @@ Intentions autorisées :
 - cancel_appointment
 - clinic_information
 - treatment_pricing
+- dental_information
 - human_handoff
 - unknown
 
@@ -83,8 +84,11 @@ Règles générales :
 - needs_clarification doit être true seulement lorsqu'une ambiguïté
   empêche de comprendre une information explicitement demandée.
 - clarification_field indique le champ ambigu, sinon "none".
-- Une demande médicale urgente ou nécessitant un avis clinique doit utiliser
-  human_handoff.
+- Une question générale sur les soins, l’hygiène ou les traitements dentaires
+  doit utiliser dental_information.
+- human_handoff est réservé aux urgences, aux symptômes personnels nécessitant
+  un avis clinique, aux demandes de diagnostic et aux demandes explicites
+  de parler à une personne.
 - Ne donne jamais de diagnostic médical.
 - Le moteur métier DentalFlow vérifiera toutes les informations.
 - Si le patient choisit un créneau parmi une liste ("le premier",
