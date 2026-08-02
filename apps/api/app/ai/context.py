@@ -10,6 +10,7 @@ class PatientContext(BaseModel):
     phone: str | None = None
     summary: str | None = None
     last_goal: str | None = None
+    preferences: dict = Field(default_factory=dict)
     notes: list[str] = Field(default_factory=list)
     medical_history: list[str] = Field(default_factory=list)
     recent_documents: list[str] = Field(default_factory=list)
@@ -47,7 +48,8 @@ async def build_patient_context(
                 """
                 SELECT
                     summary,
-                    last_goal
+                    last_goal,
+                    preferences
                 FROM patient_ai_memory
                 WHERE patient_id = %s
                   AND clinic_id = %s
@@ -138,6 +140,11 @@ async def build_patient_context(
         phone=patient["phone"],
         summary=memory["summary"] if memory else None,
         last_goal=memory["last_goal"] if memory else None,
+        preferences=(
+            memory["preferences"]
+            if memory and isinstance(memory["preferences"], dict)
+            else {}
+        ),
         notes=[
             (
                 f'{note["author_name"] or "Équipe clinique"} : '

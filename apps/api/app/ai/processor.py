@@ -1,3 +1,4 @@
+from app.ai.context import build_patient_context
 from app.ai.conversation_corrections import is_correction_message
 from app.ai.conversation_state import (
     append_conversation_turn,
@@ -44,6 +45,100 @@ from app.ai.schemas import (
     ConversationInput,
     ConversationResult,
 )
+
+
+def _format_patient_preferences(
+    preferences: dict,
+) -> str | None:
+    if not preferences:
+        return None
+
+    lines = [
+        f"- {key}: {value}"
+        for key, value in preferences.items()
+        if value is not None
+    ]
+
+    if not lines:
+        return None
+
+    return (
+        "Préférences mémorisées du patient :\n"
+        + "\n".join(lines)
+        + "\n\n"
+        + (
+            "Ces préférences sont uniquement un contexte. "
+            "Ne les considère jamais comme une demande explicite "
+            "du patient dans le message actuel."
+        )
+    )
+
+
+def _apply_habitual_preferences(
+    *,
+    original_message: str,
+    routed_message: str,
+    preferences: dict,
+    interpretation,
+) -> str:
+    """
+    Applique les préférences mémorisées uniquement lorsque le patient
+    demande explicitement son fonctionnement habituel.
+
+    Les informations exprimées dans le message actuel restent prioritaires.
+    """
+    normalized = original_message.strip().lower()
+
+    habitual_markers = (
+        "comme d'habitude",
+        "comme d’habitude",
+        "comme la dernière fois",
+        "comme la derniere fois",
+        "mes préférences habituelles",
+        "mes preferences habituelles",
+        "habituellement",
+    )
+
+    if not any(marker in normalized for marker in habitual_markers):
+        return routed_message
+
+    parts = [
+        routed_message.strip(),
+    ]
+
+    practitioner_is_missing = (
+        interpretation is None
+        or interpretation.practitioner_text is None
+    )
+    date_is_missing = (
+        interpretation is None
+        or interpretation.date_text is None
+    )
+    time_is_missing = (
+        interpretation is None
+        or interpretation.time_text is None
+    )
+
+    preferred_practitioner = preferences.get(
+        "preferred_practitioner",
+    )
+    preferred_day = preferences.get("preferred_day")
+    preferred_time = preferences.get("preferred_time")
+
+    if practitioner_is_missing and preferred_practitioner:
+        parts.append(str(preferred_practitioner))
+
+    if date_is_missing and preferred_day:
+        parts.append(str(preferred_day))
+
+    if time_is_missing and preferred_time:
+        parts.append(str(preferred_time))
+
+    return " ".join(
+        part
+        for part in parts
+        if part
+    )
 
 
 def _build_interpreted_message(
@@ -167,17 +262,12 @@ def _has_new_explicit_intent(intent: str) -> bool:
 async def _process_conversation_core(
     conversation: ConversationInput,
 ) -> ConversationResult:
-    orchestration = await orchestrate_conversation_message(
-        conversation,
-    )
-
-    intent = orchestration.intent
-    routed_message = orchestration.normalized_message
-
     patient = await find_patient_by_phone(
         clinic_id=conversation.clinic_id,
         phone=conversation.sender_phone,
     )
+
+    patient_was_created = patient is None
 
     if patient is None:
         patient = await upsert_patient_record(
@@ -185,9 +275,46 @@ async def _process_conversation_core(
             phone=conversation.sender_phone,
         )
 
+    patient_id = patient["id"]
+
+    patient_context = await build_patient_context(
+        clinic_id=conversation.clinic_id,
+        patient_id=patient_id,
+    )
+
+    preference_context = _format_patient_preferences(
+        patient_context.preferences
+        if patient_context is not None
+        else {},
+    )
+
+    orchestration = await orchestrate_conversation_message(
+        conversation,
+        conversation_context=preference_context,
+    )
+
+    intent = orchestration.intent
+    routed_message = orchestration.normalized_message
+
+    if intent in {
+        "book_appointment",
+        "reschedule_appointment",
+    }:
+        routed_message = _apply_habitual_preferences(
+            original_message=conversation.message,
+            routed_message=routed_message,
+            preferences=(
+                patient_context.preferences
+                if patient_context is not None
+                else {}
+            ),
+            interpretation=orchestration.interpretation,
+        )
+
+    if patient_was_created:
         await save_conversation_state(
             clinic_id=conversation.clinic_id,
-            patient_id=patient["id"],
+            patient_id=patient_id,
             channel=conversation.channel,
             state="waiting_for_patient_name",
             context={
@@ -198,14 +325,12 @@ async def _process_conversation_core(
 
         return ConversationResult(
             intent="patient_registration",
-            patient_id=patient["id"],
+            patient_id=patient_id,
             reply=(
                 "Bienvenue 😊 Avant de continuer, "
                 "quel est votre nom et prénom ?"
             ),
         )
-
-    patient_id = patient["id"]
     conversation_state = None
 
     if patient_id is not None:
@@ -289,6 +414,7 @@ async def _process_conversation_core(
         "[DEBUG][PROCESSOR]",
         {
             "message": conversation.message,
+            "routed_message": routed_message,
             "intent": intent,
             "conversation_state": (
                 conversation_state["state"]
