@@ -1,6 +1,7 @@
 from contextlib import asynccontextmanager
 from app.documents import router as documents_router
 from app.ai.router import router as ai_router
+from app.voice.router import router as voice_router
 from fastapi import FastAPI
 from app.document_ai import router as document_ai_router
 from app.core import router as core_router
@@ -42,4 +43,5 @@ app.include_router(auth_router)
 app.include_router(branding_router)
 app.include_router(documents_router)
 app.include_router(ai_router)
+app.include_router(voice_router)
 app.include_router(document_ai_router)

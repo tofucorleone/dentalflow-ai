@@ -2,30 +2,8 @@ from app.ai.schemas import ConversationIntent
 
 
 _INTENTS: dict[ConversationIntent, tuple[str, ...]] = {
-    "thanks": (
-        "merci",
-        "merci beaucoup",
-        "je vous remercie",
-        "c'est gentil",
-        "c’est gentil",
-    ),
-    "goodbye": (
-        "au revoir",
-        "à bientôt",
-        "a bientot",
-        "bonne journée",
-        "bonne journee",
-        "bonne soirée",
-        "bonne soiree",
-        "à plus",
-        "a plus",
-    ),
-    "greeting": (
-        "bonjour",
-        "bonsoir",
-        "salut",
-        "hello",
-    ),
+    # Les intentions métier doivent rester prioritaires sur les
+    # salutations et autres formulations sociales.
     "cancel_appointment": (
         "annuler",
         "annulation",
@@ -64,6 +42,30 @@ _INTENTS: dict[ConversationIntent, tuple[str, ...]] = {
         "combien coute",
         "coût",
         "cout",
+    ),
+    "thanks": (
+        "merci",
+        "merci beaucoup",
+        "je vous remercie",
+        "c'est gentil",
+        "c’est gentil",
+    ),
+    "goodbye": (
+        "au revoir",
+        "à bientôt",
+        "a bientot",
+        "bonne journée",
+        "bonne journee",
+        "bonne soirée",
+        "bonne soiree",
+        "à plus",
+        "a plus",
+    ),
+    "greeting": (
+        "bonjour",
+        "bonsoir",
+        "salut",
+        "hello",
     ),
 }
 

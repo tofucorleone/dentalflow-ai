@@ -1,3 +1,4 @@
+from contextvars import ContextVar, Token
 from typing import Any, Literal
 from uuid import UUID
 
@@ -18,11 +19,49 @@ ConversationState = Literal[
 ]
 
 
+_current_session_id: ContextVar[str | None] = ContextVar(
+    "dentalflow_conversation_session_id",
+    default=None,
+)
+
+
+def set_conversation_session(
+    session_id: str | None,
+) -> Token:
+    """
+    Active la session conversationnelle pour la tâche asynchrone courante.
+    """
+
+    return _current_session_id.set(session_id)
+
+
+def reset_conversation_session(
+    token: Token,
+) -> None:
+    """
+    Restaure la session précédente à la fin du traitement.
+    """
+
+    _current_session_id.reset(token)
+
+
+def _resolve_session_id(
+    session_id: str | None,
+) -> str | None:
+    if session_id is not None:
+        return session_id
+
+    return _current_session_id.get()
+
+
 async def get_conversation_state(
     clinic_id: UUID,
     patient_id: UUID,
     channel: str,
+    session_id: str | None = None,
 ) -> dict | None:
+    session_id = _resolve_session_id(session_id)
+
     async with connection() as conn:
         async with conn.cursor() as cur:
             await cur.execute(
@@ -32,6 +71,7 @@ async def get_conversation_state(
                     clinic_id,
                     patient_id,
                     channel,
+                    session_id,
                     state,
                     context,
                     last_message_at,
@@ -40,11 +80,13 @@ async def get_conversation_state(
                 WHERE clinic_id = %s
                   AND patient_id = %s
                   AND channel = %s
+                  AND session_id IS NOT DISTINCT FROM %s
                 """,
                 (
                     clinic_id,
                     patient_id,
                     channel,
+                    session_id,
                 ),
             )
 
@@ -57,51 +99,76 @@ async def save_conversation_state(
     channel: str,
     state: ConversationState,
     context: dict[str, Any] | None = None,
+    session_id: str | None = None,
 ) -> dict:
+    session_id = _resolve_session_id(session_id)
+
+    if session_id is None:
+        conflict_clause = """
+            ON CONFLICT (
+                clinic_id,
+                patient_id,
+                channel
+            )
+            WHERE session_id IS NULL
+        """
+    else:
+        conflict_clause = """
+            ON CONFLICT (
+                clinic_id,
+                patient_id,
+                channel,
+                session_id
+            )
+            WHERE session_id IS NOT NULL
+        """
+
+    query = f"""
+        INSERT INTO conversation_states (
+            clinic_id,
+            patient_id,
+            channel,
+            session_id,
+            state,
+            context,
+            last_message_at
+        )
+        VALUES (
+            %s,
+            %s,
+            %s,
+            %s,
+            %s,
+            %s,
+            NOW()
+        )
+        {conflict_clause}
+        DO UPDATE SET
+            state = EXCLUDED.state,
+            context = EXCLUDED.context,
+            last_message_at = NOW(),
+            updated_at = NOW()
+        RETURNING
+            id,
+            clinic_id,
+            patient_id,
+            channel,
+            session_id,
+            state,
+            context,
+            last_message_at,
+            updated_at
+    """
+
     async with connection() as conn:
         async with conn.cursor() as cur:
             await cur.execute(
-                """
-                INSERT INTO conversation_states (
-                    clinic_id,
-                    patient_id,
-                    channel,
-                    state,
-                    context,
-                    last_message_at
-                )
-                VALUES (
-                    %s,
-                    %s,
-                    %s,
-                    %s,
-                    %s,
-                    NOW()
-                )
-                ON CONFLICT (
-                    clinic_id,
-                    patient_id,
-                    channel
-                )
-                DO UPDATE SET
-                    state = EXCLUDED.state,
-                    context = EXCLUDED.context,
-                    last_message_at = NOW(),
-                    updated_at = NOW()
-                RETURNING
-                    id,
-                    clinic_id,
-                    patient_id,
-                    channel,
-                    state,
-                    context,
-                    last_message_at,
-                    updated_at
-                """,
+                query,
                 (
                     clinic_id,
                     patient_id,
                     channel,
+                    session_id,
                     state,
                     Jsonb(context or {}),
                 ),
@@ -112,6 +179,7 @@ async def save_conversation_state(
 
             return conversation_state
 
+
 async def append_conversation_turn(
     clinic_id: UUID,
     patient_id: UUID,
@@ -119,6 +187,7 @@ async def append_conversation_turn(
     user_message: str,
     assistant_message: str,
     max_messages: int = 20,
+    session_id: str | None = None,
 ) -> dict | None:
     """
     Ajoute atomiquement un tour utilisateur/assistant à context["history"].
@@ -126,6 +195,8 @@ async def append_conversation_turn(
     Cette fonction ne modifie ni l'état métier ni les autres clés du contexte.
     Elle conserve uniquement les derniers messages définis par max_messages.
     """
+
+    session_id = _resolve_session_id(session_id)
 
     messages = [
         {
@@ -154,6 +225,7 @@ async def append_conversation_turn(
                     WHERE clinic_id = %s
                       AND patient_id = %s
                       AND channel = %s
+                      AND session_id IS NOT DISTINCT FROM %s
                     FOR UPDATE
                 ),
                 trimmed_history AS (
@@ -198,6 +270,7 @@ async def append_conversation_turn(
                     conversation_state.clinic_id,
                     conversation_state.patient_id,
                     conversation_state.channel,
+                    conversation_state.session_id,
                     conversation_state.state,
                     conversation_state.context,
                     conversation_state.last_message_at,
@@ -208,6 +281,7 @@ async def append_conversation_turn(
                     clinic_id,
                     patient_id,
                     channel,
+                    session_id,
                     max_messages,
                 ),
             )

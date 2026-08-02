@@ -7,7 +7,9 @@ from app.ai.conversation_corrections import is_correction_message
 from app.ai.conversation_state import (
     append_conversation_turn,
     get_conversation_state,
+    reset_conversation_session,
     save_conversation_state,
+    set_conversation_session,
 )
 from app.ai.handlers.booking import (
     handle_booking,
@@ -509,7 +511,6 @@ def _has_new_explicit_intent(intent: str) -> bool:
         "cancel_appointment",
         "reschedule_appointment",
         "dental_information",
-        "preference_update",
         "human_handoff",
         "thanks",
         "goodbye",
@@ -604,6 +605,18 @@ async def _process_conversation_core(
             patient_id=patient_id,
             channel=conversation.channel,
         )
+
+        if (
+            conversation_state is None
+            and conversation.session_id is not None
+        ):
+            conversation_state = await save_conversation_state(
+                clinic_id=conversation.clinic_id,
+                patient_id=patient_id,
+                channel=conversation.channel,
+                state="idle",
+                context={},
+            )
 
     active_context = (
         conversation_state["context"]
@@ -1084,7 +1097,7 @@ async def _process_conversation_core(
     )
 
 # CHAT MODEL NATURAL REPLY WRAPPER
-async def process_conversation(
+async def _process_conversation_with_active_session(
     conversation: ConversationInput,
 ) -> ConversationResult:
     """
@@ -1155,3 +1168,26 @@ async def process_conversation(
         )
 
     return final_result
+
+
+async def process_conversation(
+    conversation: ConversationInput,
+) -> ConversationResult:
+    """
+    Active la session conversationnelle pendant tout le traitement.
+
+    Les canaux sans session explicite continuent à utiliser
+    la conversation par défaut avec session_id=None.
+    """
+
+    session_token = set_conversation_session(
+        conversation.session_id,
+    )
+
+    try:
+        return await _process_conversation_with_active_session(
+            conversation,
+        )
+    finally:
+        reset_conversation_session(session_token)
+
