@@ -7,6 +7,18 @@ from app.voice import twilio_router
 from app.voice.twilio_media import TwilioMediaError
 
 
+from fastapi import FastAPI
+from fastapi.testclient import TestClient
+
+from app.voice.twilio_router import router as twilio_test_router
+
+
+def create_test_client() -> TestClient:
+    app = FastAPI()
+    app.include_router(twilio_test_router)
+    return TestClient(app)
+
+
 CLINIC_ID = UUID(
     "576a0895-f0f1-4e4f-b78c-c1d81d2da562"
 )
@@ -313,3 +325,192 @@ def test_twilio_recording_stops_after_goodbye(
     assert response.headers["x-dentalflow-intent"] == (
         "goodbye"
     )
+
+
+def test_twilio_recording_uses_generated_audio_when_public_url_exists(
+    monkeypatch,
+):
+    import asyncio
+    from types import SimpleNamespace
+    from unittest.mock import AsyncMock, Mock
+
+    monkeypatch.setattr(
+        twilio_router,
+        "find_active_clinic_by_voice_number",
+        AsyncMock(return_value=CLINIC),
+    )
+    monkeypatch.setattr(
+        twilio_router,
+        "download_twilio_recording_mp3",
+        AsyncMock(return_value=b"fake-audio"),
+    )
+    monkeypatch.setattr(
+        twilio_router,
+        "transcribe_audio",
+        AsyncMock(return_value="Bonjour"),
+    )
+    monkeypatch.setattr(
+        twilio_router,
+        "process_conversation",
+        AsyncMock(
+            return_value=SimpleNamespace(
+                intent="greeting",
+                reply="Bonjour, comment puis-je vous aider ?",
+                requires_human=False,
+            )
+        ),
+    )
+
+    speech_mock = AsyncMock(
+        return_value=b"generated-mp3",
+    )
+    store_mock = Mock(
+        return_value="a" * 32,
+    )
+
+    monkeypatch.setattr(
+        twilio_router,
+        "get_settings",
+        Mock(
+            return_value=SimpleNamespace(
+                voice_public_base_url=(
+                    "https://voice.example.test/"
+                ),
+                voice_audio_ttl_seconds=600,
+            )
+        ),
+    )
+    monkeypatch.setattr(
+        twilio_router,
+        "generate_speech_mp3",
+        speech_mock,
+    )
+    monkeypatch.setattr(
+        twilio_router,
+        "store_voice_audio_mp3",
+        store_mock,
+    )
+
+    response = asyncio.run(
+        twilio_router.twilio_recording(
+            CallSid="CA_PLAY_TEST",
+            From="+213542910065",
+            To="+213000000000",
+            RecordingUrl=RECORDING_URL,
+            RecordingSid="RE_PLAY_TEST",
+            RecordingDuration="3",
+        )
+    )
+
+    body = response.body.decode()
+
+    expected_url = (
+        "https://voice.example.test/voice/audio/"
+        + ("a" * 32)
+    )
+
+    assert f"<Play>{expected_url}</Play>" in body
+    assert "<Record" in body
+
+    speech_mock.assert_awaited_once_with(
+        "Bonjour, comment puis-je vous aider ?",
+    )
+    store_mock.assert_called_once_with(
+        b"generated-mp3",
+        ttl_seconds=600,
+    )
+
+
+def test_twilio_incoming_rejects_invalid_signature(
+    monkeypatch,
+):
+    from types import SimpleNamespace
+    from unittest.mock import Mock
+
+    from app.voice import twilio_security
+
+    monkeypatch.setattr(
+        twilio_security,
+        "get_settings",
+        Mock(
+            return_value=SimpleNamespace(
+                twilio_signature_validation_enabled=True,
+                twilio_auth_token="test-auth-token",
+            )
+        ),
+    )
+
+    with create_test_client() as client:
+        response = client.post(
+            "/voice/twilio/incoming",
+            data={
+                "CallSid": "CA_INVALID_SIGNATURE",
+                "From": "+213542910065",
+                "To": "+213000000000",
+            },
+        )
+
+    assert response.status_code == 403
+    assert response.json()["detail"] == (
+        "Signature Twilio invalide."
+    )
+
+
+def test_twilio_incoming_accepts_valid_signature(
+    monkeypatch,
+):
+    from types import SimpleNamespace
+    from unittest.mock import Mock
+
+    from twilio.request_validator import RequestValidator
+
+    from app.voice import twilio_security
+
+    auth_token = "test-auth-token"
+
+    monkeypatch.setattr(
+        twilio_security,
+        "get_settings",
+        Mock(
+            return_value=SimpleNamespace(
+                twilio_signature_validation_enabled=True,
+                twilio_auth_token=auth_token,
+            )
+        ),
+    )
+
+    form_data = {
+        "CallSid": "CA_VALID_SIGNATURE",
+        "From": "+213542910065",
+        "To": "+213000000000",
+    }
+
+    request_url = (
+        "http://testserver/voice/twilio/incoming"
+    )
+
+    signature = RequestValidator(
+        auth_token,
+    ).compute_signature(
+        request_url,
+        form_data,
+    )
+
+    with create_test_client() as client:
+        response = client.post(
+            "/voice/twilio/incoming",
+            data=form_data,
+            headers={
+                "X-Twilio-Signature": signature,
+            },
+        )
+
+    assert response.status_code == 200
+    assert response.headers["content-type"].startswith(
+        "application/xml"
+    )
+
+    body = response.text
+
+    assert "<Response>" in body
+    assert "<Record" in body

@@ -1,12 +1,22 @@
 from html import escape
 
-from fastapi import APIRouter, Form
+from fastapi import APIRouter, Depends, Form
 from fastapi.responses import Response
 
+from app.ai.llm.client import LlmConfigurationError
 from app.ai.processor import process_conversation
 from app.ai.schemas import ConversationInput
+from app.config import get_settings
+from app.voice.audio_store import (
+    VoiceAudioStoreError,
+    store_voice_audio_mp3,
+)
 from app.voice.clinic_resolver import (
     find_active_clinic_by_voice_number,
+)
+from app.voice.speech import (
+    VoiceSpeechError,
+    generate_speech_mp3,
 )
 from app.voice.transcription import (
     VoiceTranscriptionError,
@@ -16,6 +26,9 @@ from app.voice.twilio_media import (
     TwilioConfigurationError,
     TwilioMediaError,
     download_twilio_recording_mp3,
+)
+from app.voice.twilio_security import (
+    require_valid_twilio_signature,
 )
 
 
@@ -75,6 +88,7 @@ def _build_terminal_twiml(
 def _build_conversation_reply_twiml(
     *,
     reply: str,
+    reply_audio_url: str | None,
     recording_action_url: str,
     continue_call: bool,
 ) -> str:
@@ -83,8 +97,27 @@ def _build_conversation_reply_twiml(
         quote=False,
     )
 
+    if reply_audio_url:
+        safe_audio_url = escape(
+            reply_audio_url,
+            quote=True,
+        )
+        reply_instruction = (
+            f"    <Play>{safe_audio_url}</Play>"
+        )
+    else:
+        reply_instruction = (
+            "    <Say language=\"fr-FR\">\n"
+            f"        {safe_reply}\n"
+            "    </Say>"
+        )
+
     if not continue_call:
-        return _build_terminal_twiml(safe_reply)
+        return f"""<?xml version="1.0" encoding="UTF-8"?>
+<Response>
+{reply_instruction}
+    <Hangup />
+</Response>"""
 
     safe_action_url = escape(
         recording_action_url,
@@ -93,9 +126,7 @@ def _build_conversation_reply_twiml(
 
     return f"""<?xml version="1.0" encoding="UTF-8"?>
 <Response>
-    <Say language="fr-FR">
-        {safe_reply}
-    </Say>
+{reply_instruction}
     <Record
         action="{safe_action_url}"
         method="POST"
@@ -119,6 +150,9 @@ async def twilio_incoming_call(
     CallSid: str | None = Form(default=None),
     From: str | None = Form(default=None),
     To: str | None = Form(default=None),
+    _: None = Depends(
+        require_valid_twilio_signature,
+    ),
 ) -> Response:
     """
     Reçoit un appel entrant Twilio et demande l'enregistrement
@@ -155,6 +189,9 @@ async def twilio_recording(
     RecordingUrl: str = Form(...),
     RecordingSid: str | None = Form(default=None),
     RecordingDuration: str | None = Form(default=None),
+    _: None = Depends(
+        require_valid_twilio_signature,
+    ),
 ) -> Response:
     """
     Traite un tour vocal Twilio complet.
@@ -236,8 +273,46 @@ async def twilio_recording(
         and result.intent != "goodbye"
     )
 
+    reply_audio_url = None
+    settings = get_settings()
+
+    public_base_url = (
+        settings.voice_public_base_url or ""
+    ).strip().rstrip("/")
+
+    if public_base_url:
+        try:
+            reply_audio = await generate_speech_mp3(
+                result.reply,
+            )
+
+            audio_id = store_voice_audio_mp3(
+                reply_audio,
+                ttl_seconds=max(
+                    1,
+                    settings.voice_audio_ttl_seconds,
+                ),
+            )
+
+            reply_audio_url = (
+                f"{public_base_url}/voice/audio/{audio_id}"
+            )
+        except (
+            LlmConfigurationError,
+            VoiceSpeechError,
+            VoiceAudioStoreError,
+        ) as exc:
+            print(
+                "[WARNING][TWILIO_TTS_FALLBACK]",
+                {
+                    "call_sid": CallSid,
+                    "error": str(exc),
+                },
+            )
+
     twiml = _build_conversation_reply_twiml(
         reply=result.reply,
+        reply_audio_url=reply_audio_url,
         recording_action_url="/voice/twilio/recording",
         continue_call=continue_call,
     )

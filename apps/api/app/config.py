@@ -16,9 +16,13 @@ class Settings(BaseSettings):
 
     twilio_account_sid: str | None = None
     twilio_auth_token: str | None = None
+    twilio_signature_validation_enabled: bool = False
 
     twilio_recording_download_timeout: float = 15.0
     twilio_recording_download_attempts: int = 4
+
+    voice_public_base_url: str | None = None
+    voice_audio_ttl_seconds: int = 600
 
 
     model_config = SettingsConfigDict(

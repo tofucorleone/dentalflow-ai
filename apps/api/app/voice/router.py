@@ -10,7 +10,7 @@ from fastapi import (
     UploadFile,
     status,
 )
-from fastapi.responses import Response
+from fastapi.responses import FileResponse, Response
 from pydantic import BaseModel, Field
 
 from app.ai.processor import process_conversation
@@ -20,6 +20,9 @@ from app.ai.schemas import (
 )
 from app.deps import clinic_id
 from app.ai.llm.client import LlmConfigurationError
+from app.voice.audio_store import (
+    get_voice_audio_path,
+)
 from app.voice.speech import (
     VoiceSpeechError,
     generate_speech_mp3,
@@ -69,6 +72,36 @@ router = APIRouter(
     prefix="/voice",
     tags=["Assistant vocal"],
 )
+
+
+@router.get(
+    "/audio/{audio_id}",
+    response_class=FileResponse,
+)
+async def get_generated_voice_audio(
+    audio_id: str,
+) -> FileResponse:
+    """
+    Sert un fichier MP3 temporaire généré par DentalFlow.
+    """
+
+    audio_path = get_voice_audio_path(audio_id)
+
+    if audio_path is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Fichier audio introuvable ou expiré.",
+        )
+
+    return FileResponse(
+        path=audio_path,
+        media_type="audio/mpeg",
+        filename=f"{audio_id}.mp3",
+        headers={
+            "Cache-Control": "private, max-age=300",
+            "X-AI-Generated-Voice": "true",
+        },
+    )
 
 
 @router.post(
