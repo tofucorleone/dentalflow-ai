@@ -29,6 +29,13 @@ Règles obligatoires :
   ou un saignement incontrôlé, recommande de contacter immédiatement
   le cabinet ou les services d'urgence appropriés.
 - Lorsque la réponse dépend d'un examen clinique, indique-le clairement.
+- Le contexte clinique éventuellement fourni est informatif uniquement.
+- Ne présente jamais un résumé documentaire comme un diagnostic médical.
+- Ne déduis jamais une pathologie, une contre-indication ou une prescription
+  à partir d'un document, d'une note ou d'un antécédent.
+- Si le patient demande une interprétation personnalisée de sa radiographie,
+  de son ordonnance, de son dossier ou de ses symptômes, indique qu'un
+  professionnel du cabinet doit examiner ces éléments.
 - Retourne uniquement la réponse destinée au patient.
 """
 
@@ -36,6 +43,7 @@ Règles obligatoires :
 async def generate_knowledge_fallback(
     user_message: str,
     conversation_context: str | None = None,
+    clinical_context: str | None = None,
 ) -> str | None:
     """
     Produit une réponse générale sans effectuer d'action métier.
@@ -48,13 +56,25 @@ async def generate_knowledge_fallback(
     if not cleaned_message:
         return None
 
-    prompt = (
-        f"Contexte conversationnel :\n{conversation_context.strip()}\n\n"
-        if conversation_context
-        else ""
+    prompt_parts: list[str] = []
+
+    if conversation_context:
+        prompt_parts.append(
+            "Contexte conversationnel :\n"
+            + conversation_context.strip()
+        )
+
+    if clinical_context:
+        prompt_parts.append(
+            "Contexte clinique autorisé :\n"
+            + clinical_context.strip()
+        )
+
+    prompt_parts.append(
+        f"Message du patient :\n{cleaned_message}"
     )
 
-    prompt += f"Message du patient :\n{cleaned_message}"
+    prompt = "\n\n".join(prompt_parts)
 
     try:
         client = get_openai_client()

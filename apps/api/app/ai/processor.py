@@ -218,6 +218,90 @@ async def _remember_explicit_preferences(
         return {}
 
 
+def _message_needs_clinical_context(
+    message: str,
+) -> bool:
+    normalized = message.strip().lower()
+
+    clinical_markers = (
+        "mon dossier",
+        "mes documents",
+        "mon document",
+        "ma radio",
+        "ma radiographie",
+        "mon ordonnance",
+        "mon compte rendu",
+        "mon compte-rendu",
+        "mes antécédents",
+        "mes antecedents",
+        "mon historique médical",
+        "mon historique medical",
+        "dans mon dossier",
+        "selon ma radio",
+        "d'après ma radio",
+        "d’apres ma radio",
+        "allergie",
+        "allergique",
+        "traitement en cours",
+        "médicament",
+        "medicament",
+    )
+
+    return any(
+        marker in normalized
+        for marker in clinical_markers
+    )
+
+
+def _format_clinical_context(
+    *,
+    medical_history: list[str],
+    recent_documents: list[str],
+    notes: list[str],
+) -> str | None:
+    sections: list[str] = []
+
+    if medical_history:
+        sections.append(
+            "Historique médical actif :\n"
+            + "\n".join(
+                f"- {item}"
+                for item in medical_history
+            )
+        )
+
+    if recent_documents:
+        sections.append(
+            "Documents récents :\n"
+            + "\n".join(
+                f"- {item}"
+                for item in recent_documents
+            )
+        )
+
+    if notes:
+        sections.append(
+            "Notes internes pertinentes :\n"
+            + "\n".join(
+                f"- {item}"
+                for item in notes
+            )
+        )
+
+    if not sections:
+        return None
+
+    return (
+        "\n\n".join(sections)
+        + "\n\n"
+        + (
+            "Ce contexte est informatif uniquement. "
+            "Ne pose aucun diagnostic, ne prescris aucun traitement "
+            "et ne déduis jamais une action non confirmée."
+        )
+    )
+
+
 def _format_patient_preferences(
     preferences: dict,
 ) -> str | None:
@@ -426,6 +510,7 @@ def _has_new_explicit_intent(intent: str) -> bool:
         "reschedule_appointment",
         "dental_information",
         "preference_update",
+        "human_handoff",
         "thanks",
         "goodbye",
     }
@@ -836,9 +921,24 @@ async def _process_conversation_core(
             active_context,
         )
 
+        clinical_context = None
+
+        if (
+            patient_context is not None
+            and _message_needs_clinical_context(
+                conversation.message,
+            )
+        ):
+            clinical_context = _format_clinical_context(
+                medical_history=patient_context.medical_history,
+                recent_documents=patient_context.recent_documents,
+                notes=patient_context.notes,
+            )
+
         knowledge_reply = await generate_knowledge_fallback(
             user_message=conversation.message,
             conversation_context=conversation_context,
+            clinical_context=clinical_context,
         )
 
         if knowledge_reply is not None:
@@ -927,9 +1027,24 @@ async def _process_conversation_core(
     if llm_result is not None:
         return llm_result
 
+    clinical_context = None
+
+    if (
+        patient_context is not None
+        and _message_needs_clinical_context(
+            conversation.message,
+        )
+    ):
+        clinical_context = _format_clinical_context(
+            medical_history=patient_context.medical_history,
+            recent_documents=patient_context.recent_documents,
+            notes=patient_context.notes,
+        )
+
     knowledge_reply = await generate_knowledge_fallback(
         user_message=conversation.message,
         conversation_context=conversation_context,
+        clinical_context=clinical_context,
     )
 
     if knowledge_reply is not None:
