@@ -916,6 +916,20 @@ async def _process_conversation_core(
             },
         )
 
+    if intent == "human_handoff":
+        return ConversationResult(
+            intent="human_handoff",
+            patient_id=patient_id,
+            requires_human=True,
+            reply=(
+                "Votre demande nécessite l'avis de l'équipe du cabinet. "
+                "Je vais vous mettre en relation avec un professionnel."
+            ),
+            metadata={
+                "reply_source": "human_handoff",
+            },
+        )
+
     if intent == "dental_information":
         conversation_context = format_history_for_llm(
             active_context,

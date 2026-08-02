@@ -21,11 +21,15 @@ def test_explicit_rescheduling_restarts_existing_rescheduling_workflow(
     monkeypatch,
 ):
     import asyncio
+    from types import SimpleNamespace
     from unittest.mock import AsyncMock
     from uuid import uuid4
 
     from app.ai import processor
-    from app.ai.schemas import ConversationInput, ConversationResult
+    from app.ai.schemas import (
+        ConversationInput,
+        ConversationResult,
+    )
 
     clinic_id = uuid4()
     patient_id = uuid4()
@@ -49,8 +53,21 @@ def test_explicit_rescheduling_restarts_existing_rescheduling_workflow(
         },
     }
 
-    find_patient_mock = AsyncMock(return_value=patient)
-    get_state_mock = AsyncMock(return_value=conversation_state)
+    orchestration = SimpleNamespace(
+        intent="reschedule_appointment",
+        normalized_message="Je voudrais déplacer mon rendez-vous",
+        interpretation=None,
+    )
+
+    patient_context = SimpleNamespace(
+        preferences={},
+        summary=None,
+        patient_name="Patient Test",
+        medical_history=[],
+        recent_documents=[],
+        notes=[],
+    )
+
     rescheduling_mock = AsyncMock(
         return_value=ConversationResult(
             intent="reschedule_appointment",
@@ -58,22 +75,33 @@ def test_explicit_rescheduling_restarts_existing_rescheduling_workflow(
             reply="Quel rendez-vous souhaitez-vous déplacer ?",
         )
     )
+
     time_response_mock = AsyncMock()
 
     monkeypatch.setattr(
         processor,
-        "detect_intent",
-        lambda message: "reschedule_appointment",
+        "find_patient_by_phone",
+        AsyncMock(return_value=patient),
     )
     monkeypatch.setattr(
         processor,
-        "find_patient_by_phone",
-        find_patient_mock,
+        "_remember_explicit_preferences",
+        AsyncMock(return_value={}),
+    )
+    monkeypatch.setattr(
+        processor,
+        "build_patient_context",
+        AsyncMock(return_value=patient_context),
+    )
+    monkeypatch.setattr(
+        processor,
+        "orchestrate_conversation_message",
+        AsyncMock(return_value=orchestration),
     )
     monkeypatch.setattr(
         processor,
         "get_conversation_state",
-        get_state_mock,
+        AsyncMock(return_value=conversation_state),
     )
     monkeypatch.setattr(
         processor,
@@ -98,6 +126,7 @@ def test_explicit_rescheduling_restarts_existing_rescheduling_workflow(
         patient=patient,
         message="Je voudrais déplacer mon rendez-vous",
     )
+
     time_response_mock.assert_not_awaited()
 
 
@@ -105,11 +134,15 @@ def test_booking_confirmation_correction_routes_to_date_response(
     monkeypatch,
 ):
     import asyncio
+    from types import SimpleNamespace
     from unittest.mock import AsyncMock
     from uuid import uuid4
 
     from app.ai import processor
-    from app.ai.schemas import ConversationInput, ConversationResult
+    from app.ai.schemas import (
+        ConversationInput,
+        ConversationResult,
+    )
 
     clinic_id = uuid4()
     patient_id = uuid4()
@@ -140,8 +173,32 @@ def test_booking_confirmation_correction_routes_to_date_response(
         "context": context,
     }
 
-    find_patient_mock = AsyncMock(return_value=patient)
-    get_state_mock = AsyncMock(return_value=conversation_state)
+    interpretation = SimpleNamespace(
+        intent="unknown",
+        treatment_text=None,
+        practitioner_text=None,
+        date_text="jeudi",
+        time_text=None,
+        selected_slot_index=None,
+        confidence=0.9,
+        needs_clarification=False,
+        clarification_field="none",
+    )
+
+    orchestration = SimpleNamespace(
+        intent="unknown",
+        normalized_message="Finalement jeudi",
+        interpretation=interpretation,
+    )
+
+    patient_context = SimpleNamespace(
+        preferences={},
+        summary=None,
+        patient_name="Patient Test",
+        medical_history=[],
+        recent_documents=[],
+        notes=[],
+    )
 
     date_response_mock = AsyncMock(
         return_value=ConversationResult(
@@ -150,27 +207,33 @@ def test_booking_confirmation_correction_routes_to_date_response(
             reply="Très bien, vous souhaitez venir jeudi.",
         )
     )
+
     confirmation_mock = AsyncMock()
 
     monkeypatch.setattr(
         processor,
-        "detect_intent",
-        lambda message: "unknown",
-    )
-    monkeypatch.setattr(
-        processor,
-        "find_treatment_in_message",
-        AsyncMock(return_value=None),
-    )
-    monkeypatch.setattr(
-        processor,
         "find_patient_by_phone",
-        find_patient_mock,
+        AsyncMock(return_value=patient),
+    )
+    monkeypatch.setattr(
+        processor,
+        "_remember_explicit_preferences",
+        AsyncMock(return_value={}),
+    )
+    monkeypatch.setattr(
+        processor,
+        "build_patient_context",
+        AsyncMock(return_value=patient_context),
+    )
+    monkeypatch.setattr(
+        processor,
+        "orchestrate_conversation_message",
+        AsyncMock(return_value=orchestration),
     )
     monkeypatch.setattr(
         processor,
         "get_conversation_state",
-        get_state_mock,
+        AsyncMock(return_value=conversation_state),
     )
     monkeypatch.setattr(
         processor,
@@ -196,6 +259,7 @@ def test_booking_confirmation_correction_routes_to_date_response(
         message="Finalement jeudi",
         current_context=context,
     )
+
     confirmation_mock.assert_not_awaited()
 
 
@@ -203,11 +267,15 @@ def test_booking_confirmation_correction_routes_to_time_response(
     monkeypatch,
 ):
     import asyncio
+    from types import SimpleNamespace
     from unittest.mock import AsyncMock
     from uuid import uuid4
 
     from app.ai import processor
-    from app.ai.schemas import ConversationInput, ConversationResult
+    from app.ai.schemas import (
+        ConversationInput,
+        ConversationResult,
+    )
 
     clinic_id = uuid4()
     patient_id = uuid4()
@@ -238,8 +306,32 @@ def test_booking_confirmation_correction_routes_to_time_response(
         "context": context,
     }
 
-    find_patient_mock = AsyncMock(return_value=patient)
-    get_state_mock = AsyncMock(return_value=conversation_state)
+    interpretation = SimpleNamespace(
+        intent="unknown",
+        treatment_text=None,
+        practitioner_text=None,
+        date_text=None,
+        time_text="17h",
+        selected_slot_index=None,
+        confidence=0.9,
+        needs_clarification=False,
+        clarification_field="none",
+    )
+
+    orchestration = SimpleNamespace(
+        intent="unknown",
+        normalized_message="Finalement à 17h",
+        interpretation=interpretation,
+    )
+
+    patient_context = SimpleNamespace(
+        preferences={},
+        summary=None,
+        patient_name="Patient Test",
+        medical_history=[],
+        recent_documents=[],
+        notes=[],
+    )
 
     time_response_mock = AsyncMock(
         return_value=ConversationResult(
@@ -248,27 +340,33 @@ def test_booking_confirmation_correction_routes_to_time_response(
             reply="Très bien, vous souhaitez venir à 17h.",
         )
     )
+
     confirmation_mock = AsyncMock()
 
     monkeypatch.setattr(
         processor,
-        "detect_intent",
-        lambda message: "unknown",
-    )
-    monkeypatch.setattr(
-        processor,
-        "find_treatment_in_message",
-        AsyncMock(return_value=None),
-    )
-    monkeypatch.setattr(
-        processor,
         "find_patient_by_phone",
-        find_patient_mock,
+        AsyncMock(return_value=patient),
+    )
+    monkeypatch.setattr(
+        processor,
+        "_remember_explicit_preferences",
+        AsyncMock(return_value={}),
+    )
+    monkeypatch.setattr(
+        processor,
+        "build_patient_context",
+        AsyncMock(return_value=patient_context),
+    )
+    monkeypatch.setattr(
+        processor,
+        "orchestrate_conversation_message",
+        AsyncMock(return_value=orchestration),
     )
     monkeypatch.setattr(
         processor,
         "get_conversation_state",
-        get_state_mock,
+        AsyncMock(return_value=conversation_state),
     )
     monkeypatch.setattr(
         processor,
@@ -294,6 +392,7 @@ def test_booking_confirmation_correction_routes_to_time_response(
         message="Finalement à 17h",
         current_context=context,
     )
+
     confirmation_mock.assert_not_awaited()
 
 
@@ -301,11 +400,15 @@ def test_booking_confirmation_correction_routes_to_practitioner_response(
     monkeypatch,
 ):
     import asyncio
+    from types import SimpleNamespace
     from unittest.mock import AsyncMock
     from uuid import uuid4
 
     from app.ai import processor
-    from app.ai.schemas import ConversationInput, ConversationResult
+    from app.ai.schemas import (
+        ConversationInput,
+        ConversationResult,
+    )
 
     clinic_id = uuid4()
     patient_id = uuid4()
@@ -336,8 +439,32 @@ def test_booking_confirmation_correction_routes_to_practitioner_response(
         "context": context,
     }
 
-    find_patient_mock = AsyncMock(return_value=patient)
-    get_state_mock = AsyncMock(return_value=conversation_state)
+    interpretation = SimpleNamespace(
+        intent="unknown",
+        treatment_text=None,
+        practitioner_text="Dr Martin",
+        date_text=None,
+        time_text=None,
+        selected_slot_index=None,
+        confidence=0.9,
+        needs_clarification=False,
+        clarification_field="none",
+    )
+
+    orchestration = SimpleNamespace(
+        intent="unknown",
+        normalized_message="Finalement avec le Dr Martin",
+        interpretation=interpretation,
+    )
+
+    patient_context = SimpleNamespace(
+        preferences={},
+        summary=None,
+        patient_name="Patient Test",
+        medical_history=[],
+        recent_documents=[],
+        notes=[],
+    )
 
     practitioner_response_mock = AsyncMock(
         return_value=ConversationResult(
@@ -351,23 +478,28 @@ def test_booking_confirmation_correction_routes_to_practitioner_response(
 
     monkeypatch.setattr(
         processor,
-        "detect_intent",
-        lambda message: "unknown",
-    )
-    monkeypatch.setattr(
-        processor,
-        "find_treatment_in_message",
-        AsyncMock(return_value=None),
-    )
-    monkeypatch.setattr(
-        processor,
         "find_patient_by_phone",
-        find_patient_mock,
+        AsyncMock(return_value=patient),
+    )
+    monkeypatch.setattr(
+        processor,
+        "_remember_explicit_preferences",
+        AsyncMock(return_value={}),
+    )
+    monkeypatch.setattr(
+        processor,
+        "build_patient_context",
+        AsyncMock(return_value=patient_context),
+    )
+    monkeypatch.setattr(
+        processor,
+        "orchestrate_conversation_message",
+        AsyncMock(return_value=orchestration),
     )
     monkeypatch.setattr(
         processor,
         "get_conversation_state",
-        get_state_mock,
+        AsyncMock(return_value=conversation_state),
     )
     monkeypatch.setattr(
         processor,
@@ -401,11 +533,15 @@ def test_booking_confirmation_multiple_correction_routes_to_date_response(
     monkeypatch,
 ):
     import asyncio
+    from types import SimpleNamespace
     from unittest.mock import AsyncMock
     from uuid import uuid4
 
     from app.ai import processor
-    from app.ai.schemas import ConversationInput, ConversationResult
+    from app.ai.schemas import (
+        ConversationInput,
+        ConversationResult,
+    )
 
     clinic_id = uuid4()
     patient_id = uuid4()
@@ -436,8 +572,32 @@ def test_booking_confirmation_multiple_correction_routes_to_date_response(
         "context": context,
     }
 
-    find_patient_mock = AsyncMock(return_value=patient)
-    get_state_mock = AsyncMock(return_value=conversation_state)
+    interpretation = SimpleNamespace(
+        intent="unknown",
+        treatment_text=None,
+        practitioner_text=None,
+        date_text="jeudi",
+        time_text="17h",
+        selected_slot_index=None,
+        confidence=0.9,
+        needs_clarification=False,
+        clarification_field="none",
+    )
+
+    orchestration = SimpleNamespace(
+        intent="unknown",
+        normalized_message="Finalement jeudi à 17h",
+        interpretation=interpretation,
+    )
+
+    patient_context = SimpleNamespace(
+        preferences={},
+        summary=None,
+        patient_name="Patient Test",
+        medical_history=[],
+        recent_documents=[],
+        notes=[],
+    )
 
     date_response_mock = AsyncMock(
         return_value=ConversationResult(
@@ -446,28 +606,34 @@ def test_booking_confirmation_multiple_correction_routes_to_date_response(
             reply="Très bien, jeudi à 17h.",
         )
     )
+
     time_response_mock = AsyncMock()
     confirmation_mock = AsyncMock()
 
     monkeypatch.setattr(
         processor,
-        "detect_intent",
-        lambda message: "unknown",
-    )
-    monkeypatch.setattr(
-        processor,
-        "find_treatment_in_message",
-        AsyncMock(return_value=None),
-    )
-    monkeypatch.setattr(
-        processor,
         "find_patient_by_phone",
-        find_patient_mock,
+        AsyncMock(return_value=patient),
+    )
+    monkeypatch.setattr(
+        processor,
+        "_remember_explicit_preferences",
+        AsyncMock(return_value={}),
+    )
+    monkeypatch.setattr(
+        processor,
+        "build_patient_context",
+        AsyncMock(return_value=patient_context),
+    )
+    monkeypatch.setattr(
+        processor,
+        "orchestrate_conversation_message",
+        AsyncMock(return_value=orchestration),
     )
     monkeypatch.setattr(
         processor,
         "get_conversation_state",
-        get_state_mock,
+        AsyncMock(return_value=conversation_state),
     )
     monkeypatch.setattr(
         processor,
@@ -498,5 +664,521 @@ def test_booking_confirmation_multiple_correction_routes_to_date_response(
         message="Finalement jeudi à 17h",
         current_context=context,
     )
+
     time_response_mock.assert_not_awaited()
     confirmation_mock.assert_not_awaited()
+
+
+def test_thanks_interrupts_waiting_for_time(monkeypatch):
+    import asyncio
+    from types import SimpleNamespace
+    from unittest.mock import AsyncMock, Mock
+    from uuid import uuid4
+
+    from app.ai import processor
+    from app.ai.schemas import (
+        ConversationInput,
+        ConversationResult,
+    )
+
+    clinic_id = uuid4()
+    patient_id = uuid4()
+
+    conversation = ConversationInput(
+        clinic_id=clinic_id,
+        channel="web",
+        sender_phone="+213555123456",
+        message="Merci beaucoup",
+    )
+
+    patient = {
+        "id": patient_id,
+        "full_name": "Patient Test",
+    }
+
+    conversation_state = {
+        "state": "waiting_for_time",
+        "context": {
+            "intent": "book_appointment",
+        },
+    }
+
+    orchestration = SimpleNamespace(
+        intent="thanks",
+        normalized_message="Merci beaucoup",
+        interpretation=None,
+    )
+
+    patient_context = SimpleNamespace(
+        preferences={},
+        summary=None,
+        patient_name="Patient Test",
+        medical_history=[],
+        recent_documents=[],
+        notes=[],
+    )
+
+    thanks_mock = Mock(
+        return_value=ConversationResult(
+            intent="thanks",
+            patient_id=patient_id,
+            reply="Avec plaisir.",
+        )
+    )
+
+    booking_time_mock = AsyncMock()
+
+    monkeypatch.setattr(
+        processor,
+        "find_patient_by_phone",
+        AsyncMock(return_value=patient),
+    )
+
+    monkeypatch.setattr(
+        processor,
+        "_remember_explicit_preferences",
+        AsyncMock(return_value={}),
+    )
+
+    monkeypatch.setattr(
+        processor,
+        "build_patient_context",
+        AsyncMock(return_value=patient_context),
+    )
+
+    monkeypatch.setattr(
+        processor,
+        "orchestrate_conversation_message",
+        AsyncMock(return_value=orchestration),
+    )
+
+    monkeypatch.setattr(
+        processor,
+        "get_conversation_state",
+        AsyncMock(return_value=conversation_state),
+    )
+
+    monkeypatch.setattr(
+        processor,
+        "handle_thanks",
+        thanks_mock,
+    )
+
+    monkeypatch.setattr(
+        processor,
+        "handle_booking_time_response",
+        booking_time_mock,
+    )
+
+    result = asyncio.run(
+        processor._process_conversation_core(conversation)
+    )
+
+    assert result.intent == "thanks"
+
+    thanks_mock.assert_called_once_with(patient)
+    booking_time_mock.assert_not_awaited()
+
+
+
+def test_goodbye_interrupts_waiting_for_time(monkeypatch):
+    import asyncio
+    from types import SimpleNamespace
+    from unittest.mock import AsyncMock, Mock
+    from uuid import uuid4
+
+    from app.ai import processor
+    from app.ai.schemas import (
+        ConversationInput,
+        ConversationResult,
+    )
+
+    clinic_id = uuid4()
+    patient_id = uuid4()
+
+    conversation = ConversationInput(
+        clinic_id=clinic_id,
+        channel="web",
+        sender_phone="+213555123456",
+        message="Bonne journée",
+    )
+
+    patient = {
+        "id": patient_id,
+        "full_name": "Patient Test",
+    }
+
+    conversation_state = {
+        "state": "waiting_for_time",
+        "context": {
+            "intent": "book_appointment",
+        },
+    }
+
+    orchestration = SimpleNamespace(
+        intent="goodbye",
+        normalized_message="Bonne journée",
+        interpretation=None,
+    )
+
+    patient_context = SimpleNamespace(
+        preferences={},
+        summary=None,
+        patient_name="Patient Test",
+        medical_history=[],
+        recent_documents=[],
+        notes=[],
+    )
+
+    goodbye_mock = Mock(
+        return_value=ConversationResult(
+            intent="goodbye",
+            patient_id=patient_id,
+            reply="Au revoir.",
+        )
+    )
+
+    booking_time_mock = AsyncMock()
+
+    monkeypatch.setattr(
+        processor,
+        "find_patient_by_phone",
+        AsyncMock(return_value=patient),
+    )
+    monkeypatch.setattr(
+        processor,
+        "_remember_explicit_preferences",
+        AsyncMock(return_value={}),
+    )
+    monkeypatch.setattr(
+        processor,
+        "build_patient_context",
+        AsyncMock(return_value=patient_context),
+    )
+    monkeypatch.setattr(
+        processor,
+        "orchestrate_conversation_message",
+        AsyncMock(return_value=orchestration),
+    )
+    monkeypatch.setattr(
+        processor,
+        "get_conversation_state",
+        AsyncMock(return_value=conversation_state),
+    )
+    monkeypatch.setattr(
+        processor,
+        "handle_goodbye",
+        goodbye_mock,
+    )
+    monkeypatch.setattr(
+        processor,
+        "handle_booking_time_response",
+        booking_time_mock,
+    )
+
+    result = asyncio.run(
+        processor._process_conversation_core(conversation)
+    )
+
+    assert result.intent == "goodbye"
+    goodbye_mock.assert_called_once_with(patient)
+    booking_time_mock.assert_not_awaited()
+
+
+def test_human_handoff_interrupts_waiting_for_time(monkeypatch):
+    import asyncio
+    from types import SimpleNamespace
+    from unittest.mock import AsyncMock
+    from uuid import uuid4
+
+    from app.ai import processor
+    from app.ai.schemas import (
+        ConversationInput,
+        ConversationResult,
+    )
+
+    clinic_id = uuid4()
+    patient_id = uuid4()
+
+    conversation = ConversationInput(
+        clinic_id=clinic_id,
+        channel="web",
+        sender_phone="+213555123456",
+        message=(
+            "D'après ma radio, est-ce que je peux "
+            "refaire un blanchiment ?"
+        ),
+    )
+
+    patient = {
+        "id": patient_id,
+        "full_name": "Patient Test",
+    }
+
+    conversation_state = {
+        "state": "waiting_for_time",
+        "context": {
+            "intent": "book_appointment",
+        },
+    }
+
+    orchestration = SimpleNamespace(
+        intent="human_handoff",
+        normalized_message="Blanchiment",
+        interpretation=None,
+    )
+
+    patient_context = SimpleNamespace(
+        preferences={},
+        summary=None,
+        patient_name="Patient Test",
+        medical_history=[],
+        recent_documents=[],
+        notes=[],
+    )
+
+    booking_time_mock = AsyncMock()
+
+    monkeypatch.setattr(
+        processor,
+        "find_patient_by_phone",
+        AsyncMock(return_value=patient),
+    )
+    monkeypatch.setattr(
+        processor,
+        "_remember_explicit_preferences",
+        AsyncMock(return_value={}),
+    )
+    monkeypatch.setattr(
+        processor,
+        "build_patient_context",
+        AsyncMock(return_value=patient_context),
+    )
+    monkeypatch.setattr(
+        processor,
+        "orchestrate_conversation_message",
+        AsyncMock(return_value=orchestration),
+    )
+    monkeypatch.setattr(
+        processor,
+        "get_conversation_state",
+        AsyncMock(return_value=conversation_state),
+    )
+    monkeypatch.setattr(
+        processor,
+        "handle_booking_time_response",
+        booking_time_mock,
+    )
+
+    result = asyncio.run(
+        processor._process_conversation_core(conversation)
+    )
+
+    assert result.intent == "human_handoff"
+    assert result.requires_human is True
+    booking_time_mock.assert_not_awaited()
+
+
+def test_dental_information_interrupts_waiting_for_time(monkeypatch):
+    import asyncio
+    from types import SimpleNamespace
+    from unittest.mock import AsyncMock
+    from uuid import uuid4
+
+    from app.ai import processor
+    from app.ai.schemas import (
+        ConversationInput,
+        ConversationResult,
+    )
+
+    clinic_id = uuid4()
+    patient_id = uuid4()
+
+    conversation = ConversationInput(
+        clinic_id=clinic_id,
+        channel="web",
+        sender_phone="+213555123456",
+        message="Est-ce que le blanchiment fragilise les dents ?",
+    )
+
+    patient = {
+        "id": patient_id,
+        "full_name": "Patient Test",
+    }
+
+    conversation_state = {
+        "state": "waiting_for_time",
+        "context": {
+            "intent": "book_appointment",
+            "history": [],
+        },
+    }
+
+    orchestration = SimpleNamespace(
+        intent="dental_information",
+        normalized_message="Blanchiment",
+        interpretation=None,
+    )
+
+    patient_context = SimpleNamespace(
+        preferences={},
+        summary=None,
+        patient_name="Patient Test",
+        medical_history=[],
+        recent_documents=[],
+        notes=[],
+    )
+
+    knowledge_mock = AsyncMock(
+        return_value=(
+            "Le blanchiment professionnel ne fragilise généralement "
+            "pas les dents, mais peut provoquer une sensibilité temporaire."
+        )
+    )
+
+    booking_time_mock = AsyncMock()
+
+    monkeypatch.setattr(
+        processor,
+        "find_patient_by_phone",
+        AsyncMock(return_value=patient),
+    )
+    monkeypatch.setattr(
+        processor,
+        "_remember_explicit_preferences",
+        AsyncMock(return_value={}),
+    )
+    monkeypatch.setattr(
+        processor,
+        "build_patient_context",
+        AsyncMock(return_value=patient_context),
+    )
+    monkeypatch.setattr(
+        processor,
+        "orchestrate_conversation_message",
+        AsyncMock(return_value=orchestration),
+    )
+    monkeypatch.setattr(
+        processor,
+        "get_conversation_state",
+        AsyncMock(return_value=conversation_state),
+    )
+    monkeypatch.setattr(
+        processor,
+        "generate_knowledge_fallback",
+        knowledge_mock,
+    )
+    monkeypatch.setattr(
+        processor,
+        "handle_booking_time_response",
+        booking_time_mock,
+    )
+
+    result = asyncio.run(
+        processor._process_conversation_core(conversation)
+    )
+
+    assert result.intent == "dental_information"
+    assert result.requires_human is False
+    assert result.metadata["reply_source"] == "knowledge_fallback"
+
+    knowledge_mock.assert_awaited_once_with(
+        user_message=conversation.message,
+        conversation_context=None,
+        clinical_context=None,
+    )
+    booking_time_mock.assert_not_awaited()
+
+
+def test_process_conversation_passes_patient_memory_to_chat_model(
+    monkeypatch,
+):
+    import asyncio
+    from types import SimpleNamespace
+    from unittest.mock import AsyncMock
+    from uuid import uuid4
+
+    from app.ai import processor
+    from app.ai.schemas import (
+        ConversationInput,
+        ConversationResult,
+    )
+
+    clinic_id = uuid4()
+    patient_id = uuid4()
+
+    conversation = ConversationInput(
+        clinic_id=clinic_id,
+        channel="web",
+        sender_phone="+213555123456",
+        message="Merci beaucoup",
+    )
+
+    core_result = ConversationResult(
+        intent="thanks",
+        patient_id=patient_id,
+        reply="Avec plaisir.",
+    )
+
+    patient_context = SimpleNamespace(
+        patient_name="Farid Houait",
+        summary=(
+            "Le patient préfère les rendez-vous le vendredi "
+            "après 17h avec le Dr Martin."
+        ),
+        preferences={
+            "preferred_day": "vendredi",
+            "preferred_time": "après 17h",
+            "preferred_practitioner": "Dr Martin",
+        },
+    )
+
+    captured_contexts = []
+
+    async def fake_generate_natural_reply(context):
+        captured_contexts.append(context)
+        return context.business_reply
+
+    monkeypatch.setattr(
+        processor,
+        "_process_conversation_core",
+        AsyncMock(return_value=core_result),
+    )
+    monkeypatch.setattr(
+        processor,
+        "build_patient_context",
+        AsyncMock(return_value=patient_context),
+    )
+    monkeypatch.setattr(
+        processor,
+        "generate_natural_reply",
+        fake_generate_natural_reply,
+    )
+    monkeypatch.setattr(
+        processor,
+        "append_conversation_turn",
+        AsyncMock(return_value=None),
+    )
+    monkeypatch.setattr(
+        processor,
+        "_summarize_history_if_needed",
+        AsyncMock(return_value=None),
+    )
+
+    result = asyncio.run(
+        processor.process_conversation(conversation)
+    )
+
+    assert result == core_result
+    assert len(captured_contexts) == 1
+
+    chat_context = captured_contexts[0]
+
+    assert chat_context.patient_name == "Farid Houait"
+    assert chat_context.patient_summary == patient_context.summary
+    assert (
+        chat_context.patient_preferences
+        == patient_context.preferences
+    )
+    assert chat_context.intent == "thanks"
+    assert chat_context.business_reply == "Avec plaisir."
