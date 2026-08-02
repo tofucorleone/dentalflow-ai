@@ -102,7 +102,8 @@ async def build_patient_context(
                 """
                 SELECT
                     document_type,
-                    original_filename
+                    original_filename,
+                    ai_summary
                 FROM patient_documents
                 WHERE patient_id = %s
                   AND clinic_id = %s
@@ -160,6 +161,11 @@ async def build_patient_context(
             (
                 f'{document["document_type"]} : '
                 f'{document["original_filename"]}'
+                + (
+                    f' — Résumé IA : {document["ai_summary"]}'
+                    if document.get("ai_summary")
+                    else ""
+                )
             )
             for document in documents
         ],

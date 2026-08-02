@@ -228,6 +228,39 @@ async def summarize_patient_document(
             detail=str(exc),
         ) from exc
 
+    async with connection() as conn:
+        async with conn.cursor() as cur:
+            await cur.execute(
+                """
+                UPDATE patient_documents
+                SET
+                    ai_summary = %s,
+                    updated_at = NOW()
+                WHERE id = %s
+                  AND patient_id = %s
+                  AND clinic_id = %s
+                RETURNING
+                    id,
+                    ai_summary,
+                    updated_at
+                """,
+                (
+                    summary,
+                    document_id,
+                    patient_id,
+                    current_clinic,
+                ),
+            )
+
+            updated_document = await cur.fetchone()
+            await conn.commit()
+
+    if updated_document is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Document introuvable pendant l’enregistrement du résumé.",
+        )
+
     return {
         "summary": summary,
     }
