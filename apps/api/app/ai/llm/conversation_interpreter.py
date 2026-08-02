@@ -68,6 +68,8 @@ Tu ne dois jamais réserver, déplacer ou annuler toi-même un rendez-vous.
 
 Intentions autorisées :
 - greeting
+- thanks
+- goodbye
 - book_appointment
 - reschedule_appointment
 - cancel_appointment
@@ -87,6 +89,9 @@ Règles générales :
 - clarification_field indique le champ ambigu, sinon "none".
 - Une question générale sur les soins, l’hygiène ou les traitements dentaires
   doit utiliser dental_information.
+- Un remerciement simple doit utiliser thanks.
+- Une formule de fin de conversation comme "au revoir", "bonne journée"
+  ou "à bientôt" doit utiliser goodbye.
 - Un message qui exprime uniquement une préférence durable du patient
   doit utiliser preference_update.
 - Exemples de preference_update :

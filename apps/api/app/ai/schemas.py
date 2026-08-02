@@ -14,6 +14,8 @@ ConversationChannel = Literal[
 
 ConversationIntent = Literal[
     "greeting",
+    "thanks",
+    "goodbye",
     "book_appointment",
     "reschedule_appointment",
     "cancel_appointment",

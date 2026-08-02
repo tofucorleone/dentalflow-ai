@@ -26,6 +26,10 @@ from app.ai.handlers.rescheduling import (
     handle_rescheduling_time_response,
 )
 from app.ai.handlers.greeting import handle_greeting
+from app.ai.handlers.social import (
+    handle_goodbye,
+    handle_thanks,
+)
 from app.ai.handlers.treatment_pricing import handle_treatment_pricing
 from app.ai.message_parser import extract_message_parts
 from app.ai.llm.client import LlmConfigurationError
@@ -858,6 +862,12 @@ async def _process_conversation_core(
                 "reply_source": "deterministic_fallback",
             },
         )
+
+    if intent == "thanks":
+        return handle_thanks(patient)
+
+    if intent == "goodbye":
+        return handle_goodbye(patient)
 
     if intent == "greeting":
         return handle_greeting(patient)

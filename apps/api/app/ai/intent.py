@@ -2,6 +2,24 @@ from app.ai.schemas import ConversationIntent
 
 
 _INTENTS: dict[ConversationIntent, tuple[str, ...]] = {
+    "thanks": (
+        "merci",
+        "merci beaucoup",
+        "je vous remercie",
+        "c'est gentil",
+        "c’est gentil",
+    ),
+    "goodbye": (
+        "au revoir",
+        "à bientôt",
+        "a bientot",
+        "bonne journée",
+        "bonne journee",
+        "bonne soirée",
+        "bonne soiree",
+        "à plus",
+        "a plus",
+    ),
     "greeting": (
         "bonjour",
         "bonsoir",
