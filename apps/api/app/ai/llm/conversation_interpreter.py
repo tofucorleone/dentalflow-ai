@@ -74,6 +74,7 @@ Intentions autorisées :
 - clinic_information
 - treatment_pricing
 - dental_information
+- preference_update
 - human_handoff
 - unknown
 
@@ -86,6 +87,14 @@ Règles générales :
 - clarification_field indique le champ ambigu, sinon "none".
 - Une question générale sur les soins, l’hygiène ou les traitements dentaires
   doit utiliser dental_information.
+- Un message qui exprime uniquement une préférence durable du patient
+  doit utiliser preference_update.
+- Exemples de preference_update :
+  "Je préfère toujours le Dr Sara",
+  "Le vendredi m'arrange mieux",
+  "Je suis disponible seulement après 17h".
+- Si le patient exprime une préférence et demande aussi explicitement
+  un rendez-vous, conserve book_appointment.
 - human_handoff est réservé aux urgences, aux symptômes personnels nécessitant
   un avis clinique, aux demandes de diagnostic et aux demandes explicites
   de parler à une personne.

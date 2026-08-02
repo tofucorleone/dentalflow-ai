@@ -1,4 +1,5 @@
 from app.ai.context import build_patient_context
+from app.ai.context_engine import save_patient_preferences
 from app.ai.conversation_corrections import is_correction_message
 from app.ai.conversation_state import (
     append_conversation_turn,
@@ -31,6 +32,10 @@ from app.ai.llm.chat_model import (
 )
 from app.ai.llm.history_formatter import format_history_for_llm
 from app.ai.llm.knowledge_fallback import generate_knowledge_fallback
+from app.ai.llm.preference_extractor import (
+    PreferenceExtractionError,
+    extract_patient_preferences,
+)
 from app.ai.llm.conversation_interpreter import (
     ConversationInterpretationError,
     interpret_conversation_message,
@@ -45,6 +50,68 @@ from app.ai.schemas import (
     ConversationInput,
     ConversationResult,
 )
+
+
+async def _remember_explicit_preferences(
+    *,
+    conversation: ConversationInput,
+    patient_id,
+) -> dict:
+    """
+    Mémorise uniquement les préférences durables et explicites.
+
+    Une erreur d'extraction ou de stockage ne doit jamais bloquer
+    le moteur conversationnel principal.
+    """
+    try:
+        extraction = await extract_patient_preferences(
+            clinic_id=conversation.clinic_id,
+            message=conversation.message,
+        )
+    except (
+        LlmConfigurationError,
+        PreferenceExtractionError,
+    ):
+        return {}
+
+    if (
+        not extraction.has_preferences
+        or extraction.confidence < 0.85
+    ):
+        return {}
+
+    preferences = {
+        key: value
+        for key, value in {
+            "preferred_practitioner": (
+                extraction.preferred_practitioner
+            ),
+            "preferred_day": extraction.preferred_day,
+            "preferred_time": extraction.preferred_time,
+            "preferred_language": extraction.preferred_language,
+        }.items()
+        if value is not None
+    }
+
+    if not preferences:
+        return {}
+
+    try:
+        return await save_patient_preferences(
+            clinic_id=conversation.clinic_id,
+            patient_id=patient_id,
+            preferences=preferences,
+        )
+    except Exception as exc:
+        print(
+            "[WARNING][PREFERENCE_MEMORY]",
+            {
+                "patient_id": str(patient_id),
+                "error": str(exc),
+            },
+            flush=True,
+        )
+        return {}
 
 
 def _format_patient_preferences(
@@ -254,6 +321,7 @@ def _has_new_explicit_intent(intent: str) -> bool:
         "cancel_appointment",
         "reschedule_appointment",
         "dental_information",
+        "preference_update",
     }
 
     return intent in interruptible_intents
@@ -276,6 +344,12 @@ async def _process_conversation_core(
         )
 
     patient_id = patient["id"]
+
+    if not patient_was_created:
+        await _remember_explicit_preferences(
+            conversation=conversation,
+            patient_id=patient_id,
+        )
 
     patient_context = await build_patient_context(
         clinic_id=conversation.clinic_id,
@@ -623,6 +697,33 @@ async def _process_conversation_core(
                         ),
                     },
                 )
+
+    if intent == "preference_update":
+        await save_conversation_state(
+            clinic_id=conversation.clinic_id,
+            patient_id=patient_id,
+            channel=conversation.channel,
+            state="idle",
+            context={},
+        )
+
+        return ConversationResult(
+            intent="preference_update",
+            patient_id=patient_id,
+            reply=(
+                "C’est bien noté 😊 "
+                "Je tiendrai compte de cette préférence "
+                "pour vos prochaines demandes."
+            ),
+            metadata={
+                "preferences": (
+                    patient_context.preferences
+                    if patient_context is not None
+                    else {}
+                ),
+                "reply_source": "preference_memory",
+            },
+        )
 
     if intent == "dental_information":
         conversation_context = format_history_for_llm(
