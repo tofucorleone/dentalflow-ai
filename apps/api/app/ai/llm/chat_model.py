@@ -47,6 +47,15 @@ class ChatReplyContext(BaseModel):
         max_length=200,
     )
 
+    patient_summary: str | None = Field(
+        default=None,
+        max_length=2000,
+    )
+
+    patient_preferences: dict[str, Any] = Field(
+        default_factory=dict,
+    )
+
     metadata: dict[str, Any] = Field(
         default_factory=dict,
     )
@@ -65,6 +74,11 @@ Règles obligatoires :
 - Ne confirme jamais une action qui n'est pas confirmée dans la réponse métier.
 - Ne donne jamais de diagnostic ni de conseil médical.
 - Conserve toutes les informations importantes de la réponse métier.
+- La mémoire patient sert uniquement à personnaliser légèrement le ton.
+- Ne transforme jamais une préférence mémorisée en demande actuelle.
+- N'ajoute jamais au message une information de la mémoire qui n'est pas
+  nécessaire à la reformulation.
+- Ne rappelle pas systématiquement les préférences ou le résumé au patient.
 - Réponds dans la même langue que le patient.
 - Utilise un ton professionnel, chaleureux et concis.
 - Évite les formulations robotiques et les répétitions.
@@ -102,6 +116,15 @@ def _format_reply_input(context: ChatReplyContext) -> str:
         or "- Aucun"
     )
 
+    preferences_text = (
+        "\n".join(
+            f"- {key}: {value}"
+            for key, value in context.patient_preferences.items()
+            if value is not None
+        )
+        or "- Aucune"
+    )
+
     return f"""
 Message du patient :
 {context.user_message}
@@ -114,6 +137,12 @@ Intention métier :
 
 Nom du patient :
 {context.patient_name or "non renseigné"}
+
+Résumé conversationnel durable :
+{context.patient_summary or "aucun résumé disponible"}
+
+Préférences mémorisées :
+{preferences_text}
 
 Informations métier complémentaires :
 {metadata_text}

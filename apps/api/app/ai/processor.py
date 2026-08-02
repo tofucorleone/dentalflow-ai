@@ -426,6 +426,8 @@ def _has_new_explicit_intent(intent: str) -> bool:
         "reschedule_appointment",
         "dental_information",
         "preference_update",
+        "thanks",
+        "goodbye",
     }
 
     return intent in interruptible_intents
@@ -966,11 +968,34 @@ async def process_conversation(
 
     result = await _process_conversation_core(conversation)
 
+    patient_context = None
+
+    if result.patient_id is not None:
+        patient_context = await build_patient_context(
+            clinic_id=conversation.clinic_id,
+            patient_id=result.patient_id,
+        )
+
     natural_reply = await generate_natural_reply(
         ChatReplyContext(
             intent=result.intent,
             user_message=conversation.message,
             business_reply=result.reply,
+            patient_name=(
+                patient_context.patient_name
+                if patient_context is not None
+                else None
+            ),
+            patient_summary=(
+                patient_context.summary
+                if patient_context is not None
+                else None
+            ),
+            patient_preferences=(
+                patient_context.preferences
+                if patient_context is not None
+                else {}
+            ),
             metadata=result.metadata,
         ),
     )
