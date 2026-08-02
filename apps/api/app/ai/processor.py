@@ -1,5 +1,8 @@
 from app.ai.context import build_patient_context
-from app.ai.context_engine import save_patient_preferences
+from app.ai.context_engine import (
+    save_patient_conversation_summary,
+    save_patient_preferences,
+)
 from app.ai.conversation_corrections import is_correction_message
 from app.ai.conversation_state import (
     append_conversation_turn,
@@ -36,6 +39,10 @@ from app.ai.llm.preference_extractor import (
     PreferenceExtractionError,
     extract_patient_preferences,
 )
+from app.ai.llm.conversation_summarizer import (
+    ConversationSummaryError,
+    summarize_conversation_history,
+)
 from app.ai.llm.conversation_interpreter import (
     ConversationInterpretationError,
     interpret_conversation_message,
@@ -50,6 +57,99 @@ from app.ai.schemas import (
     ConversationInput,
     ConversationResult,
 )
+
+
+async def _summarize_history_if_needed(
+    *,
+    conversation: ConversationInput,
+    patient_id,
+    updated_state: dict | None,
+    minimum_messages: int = 16,
+    retained_messages: int = 8,
+) -> None:
+    """
+    Résume une conversation longue puis conserve seulement les derniers
+    messages utiles dans l'état conversationnel.
+
+    Une erreur du LLM ou de stockage ne bloque jamais la réponse patient.
+    """
+    if updated_state is None:
+        return
+
+    context = updated_state.get("context")
+
+    if not isinstance(context, dict):
+        return
+
+    history = context.get("history")
+
+    if not isinstance(history, list):
+        return
+
+    if len(history) < minimum_messages:
+        return
+
+    cleaned_history = [
+        message
+        for message in history
+        if (
+            isinstance(message, dict)
+            and isinstance(message.get("role"), str)
+            and isinstance(message.get("content"), str)
+        )
+    ]
+
+    if len(cleaned_history) < minimum_messages:
+        return
+
+    patient_context = await build_patient_context(
+        clinic_id=conversation.clinic_id,
+        patient_id=patient_id,
+    )
+
+    previous_summary = (
+        patient_context.summary
+        if patient_context is not None
+        else None
+    )
+
+    try:
+        summary_result = await summarize_conversation_history(
+            history=cleaned_history,
+            previous_summary=previous_summary,
+        )
+
+        await save_patient_conversation_summary(
+            clinic_id=conversation.clinic_id,
+            patient_id=patient_id,
+            summary=summary_result.summary,
+            last_goal=summary_result.last_goal,
+        )
+
+        trimmed_context = dict(context)
+        trimmed_context["history"] = cleaned_history[
+            -retained_messages:
+        ]
+
+        await save_conversation_state(
+            clinic_id=conversation.clinic_id,
+            patient_id=patient_id,
+            channel=conversation.channel,
+            state=updated_state["state"],
+            context=trimmed_context,
+        )
+    except (
+        LlmConfigurationError,
+        ConversationSummaryError,
+    ) as exc:
+        print(
+            "[WARNING][CONVERSATION_SUMMARY]",
+            {
+                "patient_id": str(patient_id),
+                "error": str(exc),
+            },
+            flush=True,
+        )
 
 
 async def _remember_explicit_preferences(
@@ -876,12 +976,18 @@ async def process_conversation(
     )
 
     if final_result.patient_id is not None:
-        await append_conversation_turn(
+        updated_state = await append_conversation_turn(
             clinic_id=conversation.clinic_id,
             patient_id=final_result.patient_id,
             channel=conversation.channel,
             user_message=conversation.message,
             assistant_message=final_result.reply,
+        )
+
+        await _summarize_history_if_needed(
+            conversation=conversation,
+            patient_id=final_result.patient_id,
+            updated_state=updated_state,
         )
 
     return final_result
