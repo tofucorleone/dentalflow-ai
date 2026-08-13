@@ -116,3 +116,34 @@ class ConversationResult(BaseModel):
     metadata: dict[str, Any] = Field(
         default_factory=dict,
     )
+
+
+class ControlledConversationResponse(BaseModel):
+    handled: bool
+
+    mode: Literal[
+        "ai_active",
+        "human_active",
+        "paused",
+        "closed",
+    ]
+
+    intent: ConversationIntent | None = None
+
+    reply: str | None = Field(
+        default=None,
+        max_length=4000,
+    )
+
+    patient_id: UUID | None = None
+
+    requires_human: bool = False
+
+    actions: list[ConversationAction] = Field(
+        default_factory=list,
+    )
+
+    metadata: dict[str, Any] = Field(
+        default_factory=dict,
+    )
+

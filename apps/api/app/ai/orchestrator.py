@@ -1,12 +1,13 @@
 from typing import Literal
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from app.ai.intent import detect_intent
 from app.ai.llm.client import LlmConfigurationError
 from app.ai.llm.conversation_interpreter import (
     ConversationInterpretation,
     ConversationInterpretationError,
+    RequestedAgentTool,
     interpret_conversation_message,
 )
 from app.ai.schemas import ConversationInput, ConversationIntent
@@ -37,6 +38,10 @@ class OrchestrationDecision(BaseModel):
     normalized_message: str
 
     interpretation: ConversationInterpretation | None = None
+
+    requested_tools: list[RequestedAgentTool] = Field(
+        default_factory=list,
+    )
 
 
 def _build_normalized_message(
@@ -145,6 +150,11 @@ async def orchestrate_conversation_message(
             original_message=original_message,
             normalized_message=normalized_message,
             interpretation=interpretation,
+            requested_tools=(
+                interpretation.requested_tools
+                if interpretation is not None
+                else []
+            ),
         )
 
     # Si DentalFlow n'a rien reconnu, le LLM peut fournir l'intention,
@@ -164,6 +174,11 @@ async def orchestrate_conversation_message(
                 original_message=original_message,
             ),
             interpretation=interpretation,
+            requested_tools=(
+                interpretation.requested_tools
+                if interpretation is not None
+                else []
+            ),
         )
 
     return OrchestrationDecision(

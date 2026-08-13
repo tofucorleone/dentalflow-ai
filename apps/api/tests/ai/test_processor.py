@@ -258,6 +258,8 @@ def test_booking_confirmation_correction_routes_to_date_response(
         patient=patient,
         message="Finalement jeudi",
         current_context=context,
+        thread_id=None,
+        session_id=None,
     )
 
     confirmation_mock.assert_not_awaited()
@@ -391,6 +393,8 @@ def test_booking_confirmation_correction_routes_to_time_response(
         patient=patient,
         message="Finalement à 17h",
         current_context=context,
+        thread_id=None,
+        session_id=None,
     )
 
     confirmation_mock.assert_not_awaited()
@@ -524,6 +528,8 @@ def test_booking_confirmation_correction_routes_to_practitioner_response(
         patient=patient,
         message="Finalement avec le Dr Martin",
         current_context=context,
+        thread_id=None,
+        session_id=None,
     )
 
     confirmation_mock.assert_not_awaited()
@@ -663,6 +669,8 @@ def test_booking_confirmation_multiple_correction_routes_to_date_response(
         patient=patient,
         message="Finalement jeudi à 17h",
         current_context=context,
+        thread_id=None,
+        session_id=None,
     )
 
     time_response_mock.assert_not_awaited()
@@ -1372,6 +1380,8 @@ def test_waiting_for_time_ignores_preference_update_interrupt(
         patient=patient,
         message="17h30",
         current_context=context,
+        thread_id=None,
+        session_id="call-preference-test-001",
     )
 
     save_state_mock.assert_not_awaited()
@@ -1489,6 +1499,7 @@ def test_new_named_session_is_initialized_as_idle(
         channel="phone",
         state="idle",
         context={},
+        session_id="call-new-session-001",
     )
 
     greeting_mock.assert_called_once_with(patient)

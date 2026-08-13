@@ -201,6 +201,23 @@ def parse_booking_date(
             force_next_week=force_next_week,
         )
 
+    numeric_date_match = re.fullmatch(
+        r"(?P<day>\d{1,2})/(?P<month>\d{1,2})/(?P<year>\d{4})",
+        normalized_date,
+    )
+
+    if numeric_date_match:
+        try:
+            return date(
+                year=int(numeric_date_match.group("year")),
+                month=int(numeric_date_match.group("month")),
+                day=int(numeric_date_match.group("day")),
+            )
+        except ValueError as exc:
+            raise BookingDateTimeError(
+                "La date indiquée n'est pas valide.",
+            ) from exc
+
     explicit_date_match = re.fullmatch(
         r"(?:le\s+)?(?P<day>\d{1,2})\s+"
         r"(?P<month>"

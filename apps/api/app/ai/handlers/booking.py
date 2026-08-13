@@ -25,6 +25,9 @@ from app.ai.time_preferences import (
 from app.ai.treatment_matcher import find_treatment_in_message
 from app.ai.confirmation_parser import parse_confirmation
 from app.ai.conversation_state import save_conversation_state
+from app.ai.conversation_thread_state import (
+    save_conversation_thread_state,
+)
 from app.ai.message_parser import extract_message_parts
 from app.ai.conversation_reference_resolver import (
     resolve_relative_reference,
@@ -33,6 +36,7 @@ from app.ai.practitioner_matcher import (
     find_practitioner_in_message,
 )
 from app.ai.schemas import ConversationChannel, ConversationResult
+from app.ai.slot_filter import filter_suggested_slots
 from app.ai.slot_selection import (
     extract_selected_slot_index,
     extract_selected_slot_time,
@@ -43,23 +47,64 @@ from app.practitioner_service import list_practitioners
 from app.schemas import AppointmentIn
 
 
+async def _save_booking_state(
+    *,
+    clinic_id: UUID,
+    channel: ConversationChannel,
+    state: str,
+    context: dict[str, Any],
+    patient: dict | None = None,
+    thread_id: UUID | None = None,
+    session_id: str | None = None,
+) -> dict:
+    if patient is not None:
+        return await save_conversation_state(
+            clinic_id=clinic_id,
+            patient_id=patient["id"],
+            channel=channel,
+            state=state,
+            context=context,
+            session_id=session_id,
+        )
+
+    if thread_id is not None:
+        return await save_conversation_thread_state(
+            clinic_id=clinic_id,
+            thread_id=thread_id,
+            state=state,
+            context=context,
+            session_id=session_id,
+        )
+
+    raise RuntimeError(
+        "Impossible de sauvegarder l'état booking : "
+        "patient et thread_id sont absents."
+    )
+
+
 async def handle_booking(
     clinic_id: UUID,
     channel: ConversationChannel,
     patient: dict | None,
     message: str,
+    thread_id: UUID | None = None,
+    session_id: str | None = None,
 ) -> ConversationResult:
-    if patient is None:
+    if patient is None and thread_id is None:
         return ConversationResult(
             intent="book_appointment",
             requires_human=True,
             reply=(
-                "Je peux vous aider à prendre rendez-vous. "
-                "Pouvez-vous me communiquer votre nom complet ?"
+                "Je peux vous aider à prendre rendez-vous, "
+                "mais je n'ai pas pu identifier cette conversation."
             ),
         )
 
-    patient_id = patient["id"]
+    patient_id = (
+        patient["id"]
+        if patient is not None
+        else None
+    )
 
     parts = extract_message_parts(message)
     treatment = await find_treatment_in_message(
@@ -101,10 +146,12 @@ async def handle_booking(
         }
 
         if parts.time_text is not None:
-            await save_conversation_state(
+            await _save_booking_state(
                 clinic_id=clinic_id,
-                patient_id=patient_id,
                 channel=channel,
+                patient=patient,
+                thread_id=thread_id,
+                session_id=session_id,
                 state="waiting_for_time",
                 context=date_context,
             )
@@ -125,10 +172,12 @@ async def handle_booking(
             current_context=base_context,
         )
 
-    await save_conversation_state(
+    await _save_booking_state(
         clinic_id=clinic_id,
-        patient_id=patient_id,
         channel=channel,
+        patient=patient,
+        thread_id=thread_id,
+        session_id=session_id,
         state="waiting_for_date",
         context=base_context,
     )
@@ -143,10 +192,17 @@ async def handle_booking(
 async def handle_booking_date_response(
     clinic_id: UUID,
     channel: ConversationChannel,
-    patient: dict,
+    patient: dict | None,
     message: str,
     current_context: dict[str, Any] | None = None,
+    thread_id: UUID | None = None,
+    session_id: str | None = None,
 ) -> ConversationResult:
+    patient_id = (
+        patient["id"]
+        if patient is not None
+        else None
+    )
     message = resolve_relative_reference(
         message=message,
         context=current_context,
@@ -161,17 +217,19 @@ async def handle_booking_date_response(
         if parts.date_text is None:
             context["intent"] = "book_appointment"
 
-            await save_conversation_state(
+            await _save_booking_state(
                 clinic_id=clinic_id,
-                patient_id=patient["id"],
                 channel=channel,
+                patient=patient,
+                thread_id=thread_id,
+                session_id=session_id,
                 state="waiting_for_date",
                 context=context,
             )
 
             return ConversationResult(
                 intent="book_appointment",
-                patient_id=patient["id"],
+                patient_id=patient_id,
                 reply=(
                     "Très bien, je chercherai avec n'importe quel "
                     "praticien disponible. Quel jour souhaitez-vous venir ?"
@@ -187,7 +245,7 @@ async def handle_booking_date_response(
         if practitioner is None:
             return ConversationResult(
                 intent="book_appointment",
-                patient_id=patient["id"],
+                patient_id=patient_id,
                 reply=(
                     "Je n'ai pas trouvé ce praticien parmi "
                     "les praticiens disponibles. "
@@ -205,17 +263,19 @@ async def handle_booking_date_response(
         if parts.date_text is None:
             context["intent"] = "book_appointment"
 
-            await save_conversation_state(
+            await _save_booking_state(
                 clinic_id=clinic_id,
-                patient_id=patient["id"],
                 channel=channel,
+                patient=patient,
+                thread_id=thread_id,
+                session_id=session_id,
                 state="waiting_for_date",
                 context=context,
             )
 
             return ConversationResult(
                 intent="book_appointment",
-                patient_id=patient["id"],
+                patient_id=patient_id,
                 reply=(
                     f"Très bien, avec {practitioner['full_name']}. "
                     "Quel jour souhaitez-vous venir ?"
@@ -238,7 +298,27 @@ async def handle_booking_date_response(
             requested_date = interpretation.date_text
 
     if requested_date is None:
-        requested_date = message.strip()
+        context["intent"] = "book_appointment"
+
+        await _save_booking_state(
+            clinic_id=clinic_id,
+            channel=channel,
+            patient=patient,
+            thread_id=thread_id,
+            session_id=session_id,
+            state="waiting_for_date",
+            context=context,
+        )
+
+        return ConversationResult(
+            intent="book_appointment",
+            patient_id=patient_id,
+            reply=(
+                "Je n’ai pas identifié de date dans votre message. "
+                "Quel jour souhaitez-vous venir ? "
+                "Par exemple : demain, mardi ou le 24 août."
+            ),
+        )
 
     context.update(
         {
@@ -260,19 +340,23 @@ async def handle_booking_date_response(
             patient=patient,
             message=requested_time,
             current_context=context,
+            thread_id=thread_id,
+            session_id=session_id,
         )
 
-    await save_conversation_state(
+    await _save_booking_state(
         clinic_id=clinic_id,
-        patient_id=patient["id"],
         channel=channel,
+        patient=patient,
+        thread_id=thread_id,
+        session_id=session_id,
         state="waiting_for_time",
         context=context,
     )
 
     return ConversationResult(
         intent="book_appointment",
-        patient_id=patient["id"],
+        patient_id=patient_id,
         reply=(
             f"Très bien, vous souhaitez venir {requested_date}. "
             "À quelle heure souhaitez-vous le rendez-vous ?"
@@ -283,10 +367,17 @@ async def handle_booking_date_response(
 async def handle_booking_time_response(
     clinic_id: UUID,
     channel: ConversationChannel,
-    patient: dict,
+    patient: dict | None,
     message: str,
     current_context: dict[str, Any] | None = None,
+    thread_id: UUID | None = None,
+    session_id: str | None = None,
 ) -> ConversationResult:
+    patient_id = (
+        patient["id"]
+        if patient is not None
+        else None
+    )
     message = resolve_relative_reference(
         message=message,
         context=current_context,
@@ -306,21 +397,156 @@ async def handle_booking_time_response(
 
     context = dict(current_context or {})
 
+    unclear_messages = {
+        "",
+        "?",
+        "??",
+        "quoi",
+        "quoi ?",
+        "hein",
+        "hein ?",
+        "je ne comprends pas",
+        "je comprends pas",
+        "pouvez-vous répéter",
+        "peux-tu répéter",
+    }
+
+    normalized_message = normalize_text(message)
+
+    if (
+        normalized_message in unclear_messages
+        and context.get("suggested_slots")
+    ):
+        return ConversationResult(
+            intent="book_appointment",
+            patient_id=patient_id,
+            reply=(
+                "Je vous ai proposé plusieurs créneaux 😊\n\n"
+                "Vous pouvez répondre par exemple :\n"
+                "• le premier\n"
+                "• le dernier\n"
+                "• 17h30\n"
+                "• celui avec le Dr Sara\n"
+                "• mardi à 16h"
+            ),
+            metadata={
+                "suggested_slots": context.get(
+                    "suggested_slots",
+                    [],
+                ),
+            },
+        )
+
     if parts.date_text is not None:
         context["requested_date_text"] = parts.date_text
 
-        if parts.time_text is None:
-            await save_conversation_state(
+        filtered_slots = filter_suggested_slots(
+            context.get("suggested_slots", []),
+            practitioner_id=context.get("practitioner_id"),
+            date_text=parts.date_text,
+        )
+
+        if len(filtered_slots) > 1:
+            context["suggested_slots"] = filtered_slots
+            context["requested_date_text"] = (
+                filtered_slots[0].get("date_label")
+                or parts.date_text
+            )
+
+            await _save_booking_state(
                 clinic_id=clinic_id,
-                patient_id=patient["id"],
                 channel=channel,
+                patient=patient,
+                thread_id=thread_id,
+                session_id=session_id,
+                state="waiting_for_time",
+                context=context,
+            )
+
+            choices = "\n".join(
+                (
+                    f"• {slot.get('time_label', '')}"
+                    f" avec "
+                    f"{slot.get('practitioner_name', 'le praticien')}"
+                )
+                for slot in filtered_slots
+            )
+
+            return ConversationResult(
+                intent="book_appointment",
+                patient_id=patient_id,
+                reply=(
+                    f"Voici les créneaux disponibles le "
+                    f"{context['requested_date_text']} :\n\n"
+                    f"{choices}\n\n"
+                    "Lequel préférez-vous ?"
+                ),
+                metadata={
+                    "suggested_slots": filtered_slots,
+                },
+            )
+
+        if len(filtered_slots) == 1:
+            selected_slot = filtered_slots[0]
+
+            context["suggested_slots"] = filtered_slots
+            context["requested_date_text"] = (
+                selected_slot.get("date_label")
+                or parts.date_text
+            )
+            context["requested_time_text"] = (
+                selected_slot["time_label"]
+            )
+            context["start_at"] = selected_slot["start_at"]
+            context["end_at"] = selected_slot["end_at"]
+            context["practitioner_id"] = str(
+                selected_slot["practitioner_id"]
+            )
+            context["practitioner_name"] = selected_slot.get(
+                "practitioner_name"
+            )
+
+            await _save_booking_state(
+                clinic_id=clinic_id,
+                channel=channel,
+                patient=patient,
+                thread_id=thread_id,
+                session_id=session_id,
+                state="waiting_for_confirmation",
+                context=context,
+            )
+
+            practitioner_name = (
+                selected_slot.get("practitioner_name")
+                or "le praticien choisi"
+            )
+
+            return ConversationResult(
+                intent="book_appointment",
+                patient_id=patient_id,
+                reply=(
+                    f"Le rendez-vous avec {practitioner_name} "
+                    f"est disponible le "
+                    f"{context['requested_date_text']} "
+                    f"à {selected_slot['time_label']}. "
+                    "Souhaitez-vous le confirmer ?"
+                ),
+            )
+
+        if parts.time_text is None:
+            await _save_booking_state(
+                clinic_id=clinic_id,
+                channel=channel,
+                patient=patient,
+                thread_id=thread_id,
+                session_id=session_id,
                 state="waiting_for_time",
                 context=context,
             )
 
             return ConversationResult(
                 intent="book_appointment",
-                patient_id=patient["id"],
+                patient_id=patient_id,
                 reply=(
                     f"Très bien, vous souhaitez venir {parts.date_text}. "
                     "À quelle heure souhaitez-vous le rendez-vous ?"
@@ -332,17 +558,19 @@ async def handle_booking_time_response(
         context.pop("practitioner_name", None)
 
         if parts.time_text is None:
-            await save_conversation_state(
+            await _save_booking_state(
                 clinic_id=clinic_id,
-                patient_id=patient["id"],
                 channel=channel,
+                patient=patient,
+                thread_id=thread_id,
+                session_id=session_id,
                 state="waiting_for_time",
                 context=context,
             )
 
             return ConversationResult(
                 intent="book_appointment",
-                patient_id=patient["id"],
+                patient_id=patient_id,
                 reply=(
                     "Très bien, je chercherai avec n'importe quel "
                     "praticien disponible. À quelle heure souhaitez-vous "
@@ -359,7 +587,7 @@ async def handle_booking_time_response(
         if practitioner is None:
             return ConversationResult(
                 intent="book_appointment",
-                patient_id=patient["id"],
+                patient_id=patient_id,
                 reply=(
                     "Je n'ai pas trouvé ce praticien parmi "
                     "les praticiens disponibles. "
@@ -374,18 +602,142 @@ async def handle_booking_time_response(
             }
         )
 
-        if parts.time_text is None:
-            await save_conversation_state(
+        suggested_slots = context.get("suggested_slots", [])
+
+        filtered_slots = filter_suggested_slots(
+            suggested_slots,
+            practitioner_id=practitioner["id"],
+        )
+
+        if filtered_slots:
+            context["suggested_slots"] = filtered_slots
+
+            if len(filtered_slots) == 1:
+                only_slot = filtered_slots[0]
+
+                return await handle_booking_time_response(
+                    clinic_id=clinic_id,
+                    channel=channel,
+                    patient=patient,
+                    message=only_slot["time_label"],
+                    current_context={
+                        **context,
+                        "requested_date_text": only_slot["date_label"],
+                    },
+                )
+
+            await _save_booking_state(
                 clinic_id=clinic_id,
-                patient_id=patient["id"],
                 channel=channel,
+                patient=patient,
+                thread_id=thread_id,
+                session_id=session_id,
+                state="waiting_for_time",
+                context=context,
+            )
+
+            choices = "\n".join(
+                (
+                    f"• {slot['date_label']} "
+                    f"à {slot['time_label']}"
+                )
+                for slot in filtered_slots
+            )
+
+            return ConversationResult(
+                intent="book_appointment",
+                patient_id=patient_id,
+                reply=(
+                    f"Pour {practitioner['full_name']}, "
+                    "il reste :\n\n"
+                    f"{choices}\n\n"
+                    "Lequel préférez-vous ?"
+                ),
+                metadata={
+                    "suggested_slots": filtered_slots,
+                },
+            )
+
+        if parts.time_text is None:
+            suggested_slots = context.get("suggested_slots", [])
+
+            practitioner_slots = [
+                slot
+                for slot in suggested_slots
+                if str(slot.get("practitioner_id"))
+                == str(practitioner["id"])
+            ]
+
+            if practitioner_slots:
+                context["suggested_slots"] = practitioner_slots
+
+                slot_lines = [
+                    (
+                        f"• {slot.get('date_label', '')} "
+                        f"à {slot.get('time_label', '')}"
+                    ).strip()
+                    for slot in practitioner_slots
+                ]
+
+                await _save_booking_state(
+                    clinic_id=clinic_id,
+                    channel=channel,
+                    patient=patient,
+                    thread_id=thread_id,
+                    session_id=session_id,
+                    state="waiting_for_time",
+                    context=context,
+                )
+
+                return ConversationResult(
+                    intent="book_appointment",
+                    patient_id=patient_id,
+                    reply=(
+                        f"Très bien, avec {practitioner['full_name']}. "
+                        "Voici les créneaux déjà disponibles :\n\n"
+                        + "\n".join(slot_lines)
+                        + "\n\nQuel créneau préférez-vous ?"
+                    ),
+                    metadata={
+                        "suggested_slots": practitioner_slots,
+                    },
+                )
+
+            if suggested_slots:
+                await _save_booking_state(
+                    clinic_id=clinic_id,
+                    channel=channel,
+                    patient=patient,
+                    thread_id=thread_id,
+                    session_id=session_id,
+                    state="waiting_for_time",
+                    context=context,
+                )
+
+                return ConversationResult(
+                    intent="book_appointment",
+                    patient_id=patient_id,
+                    reply=(
+                        f"Je n’ai pas de créneau déjà proposé avec "
+                        f"{practitioner['full_name']}. "
+                        "Souhaitez-vous que je recherche ses autres "
+                        "disponibilités ?"
+                    ),
+                )
+
+            await _save_booking_state(
+                clinic_id=clinic_id,
+                channel=channel,
+                patient=patient,
+                thread_id=thread_id,
+                session_id=session_id,
                 state="waiting_for_time",
                 context=context,
             )
 
             return ConversationResult(
                 intent="book_appointment",
-                patient_id=patient["id"],
+                patient_id=patient_id,
                 reply=(
                     f"Très bien, avec {practitioner['full_name']}. "
                     "À quelle heure souhaitez-vous le rendez-vous ?"
@@ -414,7 +766,7 @@ async def handle_booking_time_response(
     if not requested_date:
         return ConversationResult(
             intent="book_appointment",
-            patient_id=patient["id"],
+            patient_id=patient_id,
             reply=(
                 "Je n'ai pas retrouvé le jour demandé. "
                 "Pouvez-vous me redonner la date souhaitée ?"
@@ -476,7 +828,15 @@ async def handle_booking_time_response(
                     selected_slot["start_at"]
                 )
 
+                requested_date = (
+                    selected_slot.get("date_label")
+                    or selected_start.strftime("%d/%m/%Y")
+                )
                 requested_time = selected_start.strftime("%Hh%M")
+
+                context["requested_date_text"] = requested_date
+                context["requested_time_text"] = requested_time
+
                 practitioner_id = UUID(
                     selected_slot["practitioner_id"]
                 )
@@ -540,14 +900,14 @@ async def handle_booking_time_response(
 
             return ConversationResult(
                 intent="book_appointment",
-                patient_id=patient["id"],
+                patient_id=patient_id,
                 reply=str(exc),
             )
 
         if not suggestions:
             return ConversationResult(
                 intent="book_appointment",
-                patient_id=patient["id"],
+                patient_id=patient_id,
                 reply=(
                     "Je n'ai trouvé aucun créneau disponible "
                     f"{requested_time} pour {requested_date}. "
@@ -611,19 +971,23 @@ async def handle_booking_time_response(
                 patient=patient,
                 message=first_start_at.strftime("%Hh%M"),
                 current_context=context,
+                thread_id=thread_id,
+                session_id=session_id,
             )
 
-        await save_conversation_state(
+        await _save_booking_state(
             clinic_id=clinic_id,
-            patient_id=patient["id"],
             channel=channel,
+            patient=patient,
+            thread_id=thread_id,
+            session_id=session_id,
             state="waiting_for_time",
             context=context,
         )
 
         return ConversationResult(
             intent="book_appointment",
-            patient_id=patient["id"],
+            patient_id=patient_id,
             reply=(
                 "Voici les premiers créneaux disponibles "
                 f"{format_time_preference_label(requested_date, requested_time)} "
@@ -671,7 +1035,7 @@ async def handle_booking_time_response(
     except BookingDateTimeError as exc:
         return ConversationResult(
             intent="book_appointment",
-            patient_id=patient["id"],
+            patient_id=patient_id,
             reply=str(exc),
         )
     except HTTPException as exc:
@@ -696,7 +1060,7 @@ async def handle_booking_time_response(
         if not suggestions:
             return ConversationResult(
                 intent="book_appointment",
-                patient_id=patient["id"],
+                patient_id=patient_id,
                 reply=(
                     f"{message_text} "
                     "Je n'ai trouvé aucun autre créneau proche. "
@@ -711,7 +1075,7 @@ async def handle_booking_time_response(
 
         return ConversationResult(
             intent="book_appointment",
-            patient_id=patient["id"],
+            patient_id=patient_id,
             reply=(
                 f"{message_text}\n\n"
                 "Je peux vous proposer :\n"
@@ -737,10 +1101,12 @@ async def handle_booking_time_response(
             selected_practitioner_name
         )
 
-    await save_conversation_state(
+    await _save_booking_state(
         clinic_id=clinic_id,
-        patient_id=patient["id"],
         channel=channel,
+        patient=patient,
+        thread_id=thread_id,
+        session_id=session_id,
         state="waiting_for_confirmation",
         context=context,
     )
@@ -769,7 +1135,7 @@ async def handle_booking_time_response(
 
     return ConversationResult(
         intent="book_appointment",
-        patient_id=patient["id"],
+        patient_id=patient_id,
         reply=(
             f"Le créneau {requested_date} à {requested_time}"
             f"{details_text} est disponible. "

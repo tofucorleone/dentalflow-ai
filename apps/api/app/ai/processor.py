@@ -4,6 +4,7 @@ from app.ai.context_engine import (
     save_patient_preferences,
 )
 from app.ai.conversation_corrections import is_correction_message
+from app.ai.confirmation_parser import parse_confirmation
 from app.ai.conversation_state import (
     append_conversation_turn,
     get_conversation_state,
@@ -53,8 +54,17 @@ from app.ai.llm.conversation_interpreter import (
     ConversationInterpretationError,
     interpret_conversation_message,
 )
+from app.ai.agent_coordinator import (
+    handle_multi_tool_request,
+)
 from app.ai.orchestrator import orchestrate_conversation_message
 from app.ai.patient_matcher import find_patient_by_phone
+from app.ai.patient_name import extract_patient_name
+from app.ai.conversation_thread_state import (
+    delete_conversation_thread_state,
+    get_conversation_thread_state,
+    save_conversation_thread_state,
+)
 from app.patient_service import (
     update_patient_name,
     upsert_patient_record,
@@ -63,6 +73,82 @@ from app.ai.schemas import (
     ConversationInput,
     ConversationResult,
 )
+
+
+def _conversation_thread_id(
+    conversation: ConversationInput,
+):
+    raw_thread_id = conversation.metadata.get("thread_id")
+
+    if raw_thread_id is None:
+        return None
+
+    try:
+        from uuid import UUID
+        return UUID(str(raw_thread_id))
+    except (TypeError, ValueError):
+        return None
+
+
+async def _get_active_conversation_state(
+    *,
+    clinic_id,
+    channel,
+    patient_id=None,
+    thread_id=None,
+    session_id=None,
+):
+    if patient_id is not None:
+        return await get_conversation_state(
+            clinic_id=clinic_id,
+            patient_id=patient_id,
+            channel=channel,
+            session_id=session_id,
+        )
+
+    if thread_id is not None:
+        return await get_conversation_thread_state(
+            clinic_id=clinic_id,
+            thread_id=thread_id,
+            session_id=session_id,
+        )
+
+    return None
+
+
+async def _save_active_conversation_state(
+    *,
+    clinic_id,
+    channel,
+    state,
+    context,
+    patient_id=None,
+    thread_id=None,
+    session_id=None,
+):
+    if patient_id is not None:
+        return await save_conversation_state(
+            clinic_id=clinic_id,
+            patient_id=patient_id,
+            channel=channel,
+            state=state,
+            context=context,
+            session_id=session_id,
+        )
+
+    if thread_id is not None:
+        return await save_conversation_thread_state(
+            clinic_id=clinic_id,
+            thread_id=thread_id,
+            state=state,
+            context=context,
+            session_id=session_id,
+        )
+
+    raise RuntimeError(
+        "Impossible de sauvegarder l'état conversationnel : "
+        "patient_id et thread_id sont absents."
+    )
 
 
 async def _summarize_history_if_needed(
@@ -420,8 +506,9 @@ def _build_interpreted_message(
 
 async def _process_with_llm_fallback(
     conversation: ConversationInput,
-    patient: dict,
+    patient: dict | None,
     patient_id,
+    thread_id=None,
     conversation_context: str | None = None,
 ) -> ConversationResult | None:
     try:
@@ -455,6 +542,8 @@ async def _process_with_llm_fallback(
             channel=conversation.channel,
             patient=patient,
             message=interpreted_message,
+            thread_id=thread_id,
+            session_id=conversation.session_id,
         )
 
     if interpretation.intent == "reschedule_appointment":
@@ -505,9 +594,11 @@ async def _process_with_llm_fallback(
     return None
 
 
-def _has_new_explicit_intent(intent: str) -> bool:
+def _has_new_explicit_intent(
+    intent: str,
+    conversation_state: str | None = None,
+) -> bool:
     interruptible_intents = {
-        "book_appointment",
         "cancel_appointment",
         "reschedule_appointment",
         "dental_information",
@@ -516,7 +607,20 @@ def _has_new_explicit_intent(intent: str) -> bool:
         "goodbye",
     }
 
-    return intent in interruptible_intents
+    if (
+        intent == "book_appointment"
+        and conversation_state in {
+            "waiting_for_date",
+            "waiting_for_time",
+            "waiting_for_confirmation",
+        }
+    ):
+        return False
+
+    return intent in interruptible_intents or (
+        intent == "book_appointment"
+        and conversation_state is None
+    )
 
 
 async def _process_conversation_core(
@@ -527,26 +631,34 @@ async def _process_conversation_core(
         phone=conversation.sender_phone,
     )
 
-    patient_was_created = patient is None
+    thread_state = None
+    thread_id = _conversation_thread_id(conversation)
 
-    if patient is None:
-        patient = await upsert_patient_record(
+    if patient is None and thread_id is not None:
+        thread_state = await get_conversation_thread_state(
             clinic_id=conversation.clinic_id,
-            phone=conversation.sender_phone,
+            thread_id=thread_id,
+            session_id=conversation.session_id,
         )
 
-    patient_id = patient["id"]
+    patient_id = (
+        patient["id"]
+        if patient is not None
+        else None
+    )
 
-    if not patient_was_created:
+    if patient_id is not None:
         await _remember_explicit_preferences(
             conversation=conversation,
             patient_id=patient_id,
         )
 
-    patient_context = await build_patient_context(
-        clinic_id=conversation.clinic_id,
-        patient_id=patient_id,
-    )
+        patient_context = await build_patient_context(
+            clinic_id=conversation.clinic_id,
+            patient_id=patient_id,
+        )
+    else:
+        patient_context = None
 
     preference_context = _format_patient_preferences(
         patient_context.preferences
@@ -577,46 +689,27 @@ async def _process_conversation_core(
             interpretation=orchestration.interpretation,
         )
 
-    if patient_was_created:
-        await save_conversation_state(
+    conversation_state = await _get_active_conversation_state(
+        clinic_id=conversation.clinic_id,
+        channel=conversation.channel,
+        patient_id=patient_id,
+        thread_id=thread_id,
+        session_id=conversation.session_id,
+    )
+
+    if (
+        conversation_state is None
+        and conversation.session_id is not None
+    ):
+        conversation_state = await _save_active_conversation_state(
             clinic_id=conversation.clinic_id,
-            patient_id=patient_id,
             channel=conversation.channel,
-            state="waiting_for_patient_name",
-            context={
-                "original_message": conversation.message,
-                "detected_intent": intent,
-            },
-        )
-
-        return ConversationResult(
-            intent="patient_registration",
             patient_id=patient_id,
-            reply=(
-                "Bienvenue 😊 Avant de continuer, "
-                "quel est votre nom et prénom ?"
-            ),
+            thread_id=thread_id,
+            session_id=conversation.session_id,
+            state="idle",
+            context={},
         )
-    conversation_state = None
-
-    if patient_id is not None:
-        conversation_state = await get_conversation_state(
-            clinic_id=conversation.clinic_id,
-            patient_id=patient_id,
-            channel=conversation.channel,
-        )
-
-        if (
-            conversation_state is None
-            and conversation.session_id is not None
-        ):
-            conversation_state = await save_conversation_state(
-                clinic_id=conversation.clinic_id,
-                patient_id=patient_id,
-                channel=conversation.channel,
-                state="idle",
-                context={},
-            )
 
     active_context = (
         conversation_state["context"]
@@ -626,67 +719,285 @@ async def _process_conversation_core(
     active_intent = active_context.get("intent")
 
     if (
-        patient is not None
-        and conversation_state is not None
+        conversation_state is not None
         and conversation_state["state"] == "waiting_for_patient_name"
     ):
-        updated_patient = await update_patient_name(
-            clinic_id=conversation.clinic_id,
-            patient_id=patient["id"],
-            full_name=conversation.message,
+        patient_name = extract_patient_name(
+            conversation.message,
         )
 
-        if updated_patient is None:
+        if patient_name is None:
+            if (
+                patient is None
+                and thread_id is not None
+                and active_context.get("intent") == "book_appointment"
+            ):
+                correction_parts = extract_message_parts(
+                    conversation.message,
+                )
+
+                booking_result = None
+
+                if correction_parts.date_text is not None:
+                    booking_result = await handle_booking_date_response(
+                        clinic_id=conversation.clinic_id,
+                        channel=conversation.channel,
+                        patient=None,
+                        message=conversation.message,
+                        current_context=active_context,
+                        thread_id=thread_id,
+                        session_id=conversation.session_id,
+                    )
+
+                elif (
+                    correction_parts.time_text is not None
+                    or correction_parts.practitioner_text is not None
+                    or correction_parts.any_practitioner
+                ):
+                    booking_result = await handle_booking_time_response(
+                        clinic_id=conversation.clinic_id,
+                        channel=conversation.channel,
+                        patient=None,
+                        message=conversation.message,
+                        current_context=active_context,
+                        thread_id=thread_id,
+                        session_id=conversation.session_id,
+                    )
+
+                if booking_result is not None:
+                    updated_thread_state = (
+                        await get_conversation_thread_state(
+                            clinic_id=conversation.clinic_id,
+                            thread_id=thread_id,
+                            session_id=conversation.session_id,
+                        )
+                    )
+
+                    updated_context = (
+                        updated_thread_state["context"]
+                        if updated_thread_state is not None
+                        else active_context
+                    ) or {}
+
+                    await save_conversation_thread_state(
+                        clinic_id=conversation.clinic_id,
+                        thread_id=thread_id,
+                        session_id=conversation.session_id,
+                        state="waiting_for_patient_name",
+                        context={
+                            **updated_context,
+                            "name_required": True,
+                        },
+                    )
+
+                    return booking_result.model_copy(
+                        update={
+                            "patient_id": None,
+                            "reply": (
+                                f"{booking_result.reply}\n\n"
+                                "Pour finaliser votre dossier, "
+                                "pouvez-vous aussi m'indiquer "
+                                "votre nom et prénom ?"
+                            ),
+                        },
+                    )
+
+            incidental_result = None
+
+            if intent == "treatment_pricing":
+                incidental_result = await handle_treatment_pricing(
+                    clinic_id=conversation.clinic_id,
+                    patient_id=None,
+                )
+
+            elif intent == "clinic_information":
+                incidental_result = ConversationResult(
+                    intent="clinic_information",
+                    patient_id=None,
+                    reply=(
+                        "Je peux vous renseigner sur les horaires, "
+                        "l'adresse ou les informations de la clinique."
+                    ),
+                )
+
+            elif intent == "dental_information":
+                conversation_context = format_history_for_llm(
+                    active_context,
+                )
+
+                knowledge_reply = await generate_knowledge_fallback(
+                    user_message=conversation.message,
+                    conversation_context=conversation_context,
+                    clinical_context=None,
+                )
+
+                if knowledge_reply is not None:
+                    incidental_result = ConversationResult(
+                        intent="dental_information",
+                        patient_id=None,
+                        reply=knowledge_reply,
+                        metadata={
+                            "reply_source": "knowledge_fallback",
+                        },
+                    )
+                else:
+                    incidental_result = ConversationResult(
+                        intent="dental_information",
+                        patient_id=None,
+                        requires_human=True,
+                        reply=(
+                            "Cette question nécessite l'avis "
+                            "d'un professionnel du cabinet."
+                        ),
+                    )
+
+            if incidental_result is not None:
+                return incidental_result.model_copy(
+                    update={
+                        "patient_id": None,
+                        "reply": (
+                            f"{incidental_result.reply}\n\n"
+                            "Et pour finaliser votre rendez-vous, "
+                            "pouvez-vous m'indiquer votre nom et prénom ?"
+                        ),
+                    },
+                )
+
             return ConversationResult(
                 intent="patient_registration",
-                patient_id=patient["id"],
+                patient_id=patient_id,
                 reply=(
-                    "Je n'ai pas bien compris votre nom. "
-                    "Pouvez-vous m'indiquer votre nom et prénom ?"
+                    "Je n'ai pas identifié un nom et prénom valides "
+                    "dans votre message. "
+                    "Pour finaliser le rendez-vous, pouvez-vous "
+                    "m'indiquer uniquement votre nom et prénom ?"
                 ),
             )
 
-        original_message = active_context.get("original_message")
+        # Ancien comportement conservé pour les éventuels dossiers
+        # déjà créés avant cette évolution.
+        if patient is not None:
+            updated_patient = await update_patient_name(
+                clinic_id=conversation.clinic_id,
+                patient_id=patient["id"],
+                full_name=patient_name,
+            )
 
-        await save_conversation_state(
-            clinic_id=conversation.clinic_id,
-            patient_id=patient["id"],
-            channel=conversation.channel,
-            state="idle",
-            context={},
-        )
+            if updated_patient is None:
+                return ConversationResult(
+                    intent="patient_registration",
+                    patient_id=patient["id"],
+                    reply=(
+                        "Je n'ai pas bien compris votre nom. "
+                        "Pouvez-vous m'indiquer votre nom et prénom ?"
+                    ),
+                )
 
-        if not original_message:
             return ConversationResult(
                 intent="patient_registration",
                 patient_id=patient["id"],
                 reply=(
                     f"Merci {updated_patient['full_name']} 😊 "
-                    "Comment puis-je vous aider ?"
+                    "Votre dossier est maintenant complété."
                 ),
             )
 
-        resumed_conversation = conversation.model_copy(
-            update={
-                "message": original_message,
-                "patient_id": patient["id"],
-            },
+        if thread_id is None:
+            return ConversationResult(
+                intent="patient_registration",
+                patient_id=None,
+                requires_human=True,
+                reply=(
+                    "Je n'ai pas pu rattacher votre dossier "
+                    "à cette conversation. "
+                    "L'équipe du cabinet va pouvoir vous aider."
+                ),
+            )
+
+        # Le patient n'est créé qu'ici :
+        # après confirmation du créneau ET validation stricte du nom.
+        created_patient = await upsert_patient_record(
+            clinic_id=conversation.clinic_id,
+            phone=conversation.sender_phone,
+            full_name=patient_name,
         )
 
-        resumed_result = await _process_conversation_core(
-            resumed_conversation,
+        created_patient_id = created_patient["id"]
+
+        # Le créneau confirmé passe maintenant du stockage temporaire
+        # du thread vers l'état conversationnel du vrai patient.
+        await save_conversation_state(
+            clinic_id=conversation.clinic_id,
+            patient_id=created_patient_id,
+            channel=conversation.channel,
+            state="waiting_for_confirmation",
+            context=active_context,
+            session_id=conversation.session_id,
         )
 
-        return resumed_result.model_copy(
+        await delete_conversation_thread_state(
+            clinic_id=conversation.clinic_id,
+            thread_id=thread_id,
+            session_id=conversation.session_id,
+        )
+
+        # Le patient avait déjà confirmé le créneau avant que son nom
+        # soit demandé. On reprend donc directement cette confirmation.
+        booking_result = await handle_booking_confirmation_response(
+            clinic_id=conversation.clinic_id,
+            channel=conversation.channel,
+            patient=created_patient,
+            message="oui",
+            current_context=active_context,
+        )
+
+        return booking_result.model_copy(
             update={
                 "reply": (
-                    f"Merci {updated_patient['full_name']} 😊\n\n"
-                    f"{resumed_result.reply}"
+                    f"Merci {created_patient['full_name']} 😊\n\n"
+                    f"{booking_result.reply}"
                 ),
             },
         )
 
-    has_new_explicit_intent = _has_new_explicit_intent(intent)
+    workflow_action = getattr(
+        orchestration.interpretation,
+        "workflow_action",
+        "none",
+    ) if orchestration.interpretation is not None else "none"
+
+    if (
+        conversation_state is not None
+        and conversation_state["state"] == "waiting_for_date"
+        and active_intent == "book_appointment"
+        and workflow_action == "abandon"
+    ):
+        await _save_active_conversation_state(
+            clinic_id=conversation.clinic_id,
+            channel=conversation.channel,
+            patient_id=patient_id,
+            thread_id=thread_id,
+            session_id=conversation.session_id,
+            state="idle",
+            context={},
+        )
+
+        return ConversationResult(
+            intent="book_appointment",
+            patient_id=patient_id,
+            reply=(
+                "D'accord, j'abandonne cette nouvelle demande "
+                "de rendez-vous. Votre rendez-vous existant "
+                "reste inchangé."
+            ),
+        )
+
+    has_new_explicit_intent = _has_new_explicit_intent(
+        intent,
+        conversation_state["state"]
+        if conversation_state is not None
+        else None,
+    )
 
     print(
         "[DEBUG][PROCESSOR]",
@@ -705,6 +1016,34 @@ async def _process_conversation_core(
         },
         flush=True,
     )
+
+    requested_tools = getattr(
+        orchestration,
+        "requested_tools",
+        [],
+    )
+
+    is_active_booking_continuation = (
+        conversation_state is not None
+        and active_intent == "book_appointment"
+        and intent in {
+            "book_appointment",
+            "unknown",
+        }
+        and conversation_state["state"] in {
+            "waiting_for_date",
+            "waiting_for_time",
+            "waiting_for_confirmation",
+        }
+    )
+
+    if len(requested_tools) >= 2:
+        return await handle_multi_tool_request(
+            conversation=conversation,
+            orchestration=orchestration,
+            patient_id=patient_id,
+            thread_id=thread_id,
+        )
 
     if (
         patient is not None
@@ -735,8 +1074,7 @@ async def _process_conversation_core(
         )
 
     if (
-        patient is not None
-        and conversation_state is not None
+        conversation_state is not None
         and conversation_state["state"] == "waiting_for_date"
         and not has_new_explicit_intent
     ):
@@ -746,13 +1084,20 @@ async def _process_conversation_core(
             patient=patient,
             message=conversation.message,
             current_context=conversation_state["context"],
+            thread_id=thread_id,
+            session_id=conversation.session_id,
         )
 
     if (
-        patient is not None
-        and conversation_state is not None
+        conversation_state is not None
         and conversation_state["state"] == "waiting_for_time"
-        and not has_new_explicit_intent
+        and (
+            not has_new_explicit_intent
+            or (
+                active_intent == "book_appointment"
+                and intent == "book_appointment"
+            )
+        )
     ):
         return await handle_booking_time_response(
             clinic_id=conversation.clinic_id,
@@ -760,12 +1105,13 @@ async def _process_conversation_core(
             patient=patient,
             message=conversation.message,
             current_context=conversation_state["context"],
+            thread_id=thread_id,
+            session_id=conversation.session_id,
         )
 
 
     if (
-        patient is not None
-        and conversation_state is not None
+        conversation_state is not None
         and conversation_state["state"] == "waiting_for_confirmation"
         and not has_new_explicit_intent
     ):
@@ -785,6 +1131,8 @@ async def _process_conversation_core(
                         patient=patient,
                         message=conversation.message,
                         current_context=context,
+                        thread_id=thread_id,
+                        session_id=conversation.session_id,
                     )
 
                 if correction_parts.time_text is not None:
@@ -794,6 +1142,8 @@ async def _process_conversation_core(
                         patient=patient,
                         message=conversation.message,
                         current_context=context,
+                        thread_id=thread_id,
+                        session_id=conversation.session_id,
                     )
 
                 if (
@@ -806,6 +1156,8 @@ async def _process_conversation_core(
                         patient=patient,
                         message=conversation.message,
                         current_context=context,
+                        thread_id=thread_id,
+                        session_id=conversation.session_id,
                     )
 
             if active_workflow == "reschedule_appointment":
@@ -826,6 +1178,70 @@ async def _process_conversation_core(
                         message=conversation.message,
                         current_context=context,
                     )
+
+        if (
+            context.get("intent") == "book_appointment"
+            and patient is None
+        ):
+            confirmation = parse_confirmation(
+                conversation.message,
+            )
+
+            if confirmation is False:
+                await _save_active_conversation_state(
+                    clinic_id=conversation.clinic_id,
+                    channel=conversation.channel,
+                    patient_id=None,
+                    thread_id=thread_id,
+                    session_id=conversation.session_id,
+                    state="completed",
+                    context={
+                        **context,
+                        "confirmed": False,
+                    },
+                )
+
+                return ConversationResult(
+                    intent="book_appointment",
+                    patient_id=None,
+                    reply=(
+                        "Très bien, le rendez-vous n'a pas été créé. "
+                        "Je reste disponible si vous souhaitez "
+                        "un autre créneau."
+                    ),
+                )
+
+            if confirmation is None:
+                return ConversationResult(
+                    intent="book_appointment",
+                    patient_id=None,
+                    reply=(
+                        "Pouvez-vous répondre par « oui » pour confirmer "
+                        "ou « non » pour annuler ?"
+                    ),
+                )
+
+            await _save_active_conversation_state(
+                clinic_id=conversation.clinic_id,
+                channel=conversation.channel,
+                patient_id=None,
+                thread_id=thread_id,
+                session_id=conversation.session_id,
+                state="waiting_for_patient_name",
+                context={
+                    **context,
+                    "confirmed": True,
+                },
+            )
+
+            return ConversationResult(
+                intent="patient_registration",
+                patient_id=None,
+                reply=(
+                    "Parfait 😊 Pour finaliser ce rendez-vous, "
+                    "pouvez-vous m'indiquer votre nom et prénom ?"
+                ),
+            )
 
         if context.get("intent") == "cancel_appointment":
             return await handle_cancellation_confirmation(
@@ -1007,6 +1423,8 @@ async def _process_conversation_core(
             channel=conversation.channel,
             patient=patient,
             message=routed_message,
+            thread_id=thread_id,
+            session_id=conversation.session_id,
         )
 
     if intent == "cancel_appointment":
@@ -1048,6 +1466,7 @@ async def _process_conversation_core(
         conversation=conversation,
         patient=patient,
         patient_id=patient_id,
+        thread_id=thread_id,
         conversation_context=conversation_context,
     )
 
