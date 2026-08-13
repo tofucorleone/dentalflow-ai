@@ -12,7 +12,7 @@ password_hash = PasswordHash.recommended()
 settings = get_settings()
 SECRET_KEY = settings.jwt_secret
 ALGORITHM = "HS256"
-ACCESS_TOKEN_EXPIRE_MINUTES = 30
+ACCESS_TOKEN_EXPIRE_MINUTES = 12 * 60
 
 
 def hash_password(password: str) -> str:
@@ -62,4 +62,4 @@ password_hash = PasswordHash.recommended()
 settings = get_settings()
 SECRET_KEY = settings.jwt_secret
 ALGORITHM = "HS256"
-ACCESS_TOKEN_EXPIRE_MINUTES = 30
+ACCESS_TOKEN_EXPIRE_MINUTES = 12 * 60
