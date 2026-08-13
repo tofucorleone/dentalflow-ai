@@ -29,6 +29,11 @@ class ClinicBrandingPatch(BaseModel):
         default=None,
         pattern=r"^#[0-9A-Fa-f]{6}$",
     )
+    currency_label: str | None = Field(
+        default=None,
+        min_length=1,
+        max_length=12,
+    )
 
 
 class TreatmentIn(BaseModel):
@@ -49,6 +54,24 @@ class TreatmentPatch(BaseModel):
     active: bool | None = None
 
 
+class TreatmentSessionIn(BaseModel):
+    name: str = Field(min_length=1, max_length=160)
+    description: str | None = Field(default=None, max_length=1000)
+    duration_minutes: int = Field(gt=0, le=480)
+    position: int | None = Field(default=None, gt=0)
+
+
+class TreatmentSessionPatch(BaseModel):
+    name: str | None = Field(default=None, min_length=1, max_length=160)
+    description: str | None = Field(default=None, max_length=1000)
+    duration_minutes: int | None = Field(default=None, gt=0, le=480)
+    position: int | None = Field(default=None, gt=0)
+
+
+class TreatmentSessionsReorderIn(BaseModel):
+    session_ids: list[UUID]
+
+
 class PractitionerIn(BaseModel):
     full_name: str = Field(min_length=2, max_length=150)
     speciality: str | None = Field(default=None, max_length=150)
@@ -56,6 +79,31 @@ class PractitionerIn(BaseModel):
     phone: str | None = Field(default=None, max_length=40)
     email: str | None = Field(default=None, max_length=255)
     active: bool = True
+
+
+class PractitionerPatch(BaseModel):
+    full_name: str | None = Field(
+        default=None,
+        min_length=2,
+        max_length=150,
+    )
+    speciality: str | None = Field(
+        default=None,
+        max_length=150,
+    )
+    google_calendar_id: str | None = Field(
+        default=None,
+        max_length=500,
+    )
+    phone: str | None = Field(
+        default=None,
+        max_length=40,
+    )
+    email: str | None = Field(
+        default=None,
+        max_length=255,
+    )
+    active: bool | None = None
 
 
 class PatientIn(BaseModel):

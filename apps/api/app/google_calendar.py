@@ -112,11 +112,22 @@ def _delete_sync(calendar_id: str, event_id: str) -> None:
             .execute()
         )
     except HttpError as exc:
-        # 404 means the event is already absent; cancellation remains idempotent.
-        if getattr(exc, "status_code", None) == 404 or getattr(exc.resp, "status", None) == 404:
+        # 404/410 mean the event is already absent.
+        # Cancellation therefore remains idempotent.
+        google_status = (
+            getattr(exc, "status_code", None)
+            or getattr(exc.resp, "status", None)
+        )
+
+        if google_status in (404, 410):
             return
+
         raise CalendarOperationError(
             f"Échec de suppression Google Calendar : {exc}"
+        ) from exc
+    except OSError as exc:
+        raise CalendarOperationError(
+            f"Google Calendar est momentanément inaccessible : {exc}"
         ) from exc
 
 
