@@ -17,6 +17,7 @@ class Settings(BaseSettings):
     twilio_account_sid: str | None = None
     twilio_auth_token: str | None = None
     twilio_signature_validation_enabled: bool = False
+    twilio_whatsapp_sandbox_clinic_id: str | None = None
 
     twilio_recording_download_timeout: float = 15.0
     twilio_recording_download_attempts: int = 4
