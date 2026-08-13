@@ -52,6 +52,39 @@ services:
       timeout: 5s
       retries: 10
 
+  api-test:
+    build:
+      context: ./apps/api
+      dockerfile: Dockerfile.test
+    env_file:
+      - .env
+    environment:
+      DATABASE_URL: postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
+    profiles:
+      - test
+    volumes:
+      - ./apps/api/app:/app/app:ro
+      - ./apps/api/tests:/app/tests:ro
+
+  appointment-confirmation-worker:
+    build:
+      context: ./apps/api
+    container_name: dentalflow-appointment-confirmation-worker
+    restart: unless-stopped
+    command:
+      - python
+      - -m
+      - app.appointment_confirmation_worker
+    env_file:
+      - .env
+    environment:
+      DATABASE_URL: postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
+      APPOINTMENT_CONFIRMATION_WORKER_INTERVAL_SECONDS: ${APPOINTMENT_CONFIRMATION_WORKER_INTERVAL_SECONDS:-60}
+      APPOINTMENT_CONFIRMATION_DISPATCH_LIMIT: ${APPOINTMENT_CONFIRMATION_DISPATCH_LIMIT:-20}
+    depends_on:
+      postgres:
+        condition: service_healthy
+
   dashboard:
     build:
       context: ./apps/dashboard

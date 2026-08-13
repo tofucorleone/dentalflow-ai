@@ -40,3 +40,8 @@ storage/temp/*
 *.before-*
 
 /storage/branding/
+
+# Sauvegardes locales de développement
+*.bak-*
+.backups/
+/dentalflow-before-*.sql

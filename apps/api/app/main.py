@@ -3,9 +3,12 @@ from app.documents import router as documents_router
 from app.ai.router import router as ai_router
 from app.voice.router import router as voice_router
 from app.voice.twilio_router import router as twilio_router
+from app.whatsapp.twilio_router import router as whatsapp_router
 from fastapi import FastAPI
 from app.document_ai import router as document_ai_router
 from app.core import router as core_router
+from app.copilot.router import router as copilot_router
+from app.conversations.router import router as conversations_router
 from app.patient360 import router as patient360_router
 from app.db import close_pool, connection, open_pool
 from app.auth import router as auth_router
@@ -44,6 +47,9 @@ app.include_router(auth_router)
 app.include_router(branding_router)
 app.include_router(documents_router)
 app.include_router(ai_router)
+app.include_router(copilot_router)
+app.include_router(conversations_router)
 app.include_router(voice_router)
 app.include_router(twilio_router)
+app.include_router(whatsapp_router)
 app.include_router(document_ai_router)

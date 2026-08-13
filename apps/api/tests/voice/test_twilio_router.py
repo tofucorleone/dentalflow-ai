@@ -82,6 +82,38 @@ def test_twilio_recording_processes_valid_call(
         processor_mock,
     )
 
+    from unittest.mock import Mock
+
+    speech_mock = AsyncMock(
+        return_value=b"generated-booking-mp3",
+    )
+    store_mock = Mock(
+        return_value="c" * 32,
+    )
+
+    monkeypatch.setattr(
+        twilio_router,
+        "get_settings",
+        Mock(
+            return_value=SimpleNamespace(
+                voice_public_base_url=(
+                    "https://voice.example.test/"
+                ),
+                voice_audio_ttl_seconds=600,
+            )
+        ),
+    )
+    monkeypatch.setattr(
+        twilio_router,
+        "generate_speech_mp3",
+        speech_mock,
+    )
+    monkeypatch.setattr(
+        twilio_router,
+        "store_voice_audio_mp3",
+        store_mock,
+    )
+
     response = asyncio.run(
         twilio_router.twilio_recording(
             CallSid="CA_TEST_001",
@@ -95,9 +127,14 @@ def test_twilio_recording_processes_valid_call(
 
     body = response.body.decode()
 
+    expected_url = (
+        "https://voice.example.test/voice/audio/"
+        + ("c" * 32)
+    )
+
     assert response.status_code == 200
     assert response.media_type == "application/xml"
-    assert "Les créneaux disponibles" in body
+    assert f"<Play>{expected_url}</Play>" in body
     assert "<Record" in body
     assert "/voice/twilio/recording" in body
 
@@ -252,6 +289,38 @@ def test_twilio_recording_stops_for_human_handoff(
         ),
     )
 
+    from unittest.mock import Mock
+
+    speech_mock = AsyncMock(
+        return_value=b"generated-handoff-mp3",
+    )
+    store_mock = Mock(
+        return_value="d" * 32,
+    )
+
+    monkeypatch.setattr(
+        twilio_router,
+        "get_settings",
+        Mock(
+            return_value=SimpleNamespace(
+                voice_public_base_url=(
+                    "https://voice.example.test/"
+                ),
+                voice_audio_ttl_seconds=600,
+            )
+        ),
+    )
+    monkeypatch.setattr(
+        twilio_router,
+        "generate_speech_mp3",
+        speech_mock,
+    )
+    monkeypatch.setattr(
+        twilio_router,
+        "store_voice_audio_mp3",
+        store_mock,
+    )
+
     response = asyncio.run(
         twilio_router.twilio_recording(
             CallSid="CA_HANDOFF",
@@ -265,7 +334,12 @@ def test_twilio_recording_stops_for_human_handoff(
 
     body = response.body.decode()
 
-    assert "mettre en relation" in body
+    expected_url = (
+        "https://voice.example.test/voice/audio/"
+        + ("d" * 32)
+    )
+
+    assert f"<Play>{expected_url}</Play>" in body
     assert "<Hangup" in body
     assert "<Record" not in body
     assert (
@@ -279,6 +353,8 @@ def test_twilio_recording_stops_for_human_handoff(
 def test_twilio_recording_stops_after_goodbye(
     monkeypatch,
 ):
+    from unittest.mock import Mock
+
     monkeypatch.setattr(
         twilio_router,
         "find_active_clinic_by_voice_number",
@@ -306,6 +382,36 @@ def test_twilio_recording_stops_after_goodbye(
         ),
     )
 
+    speech_mock = AsyncMock(
+        return_value=b"generated-goodbye-mp3",
+    )
+    store_mock = Mock(
+        return_value="b" * 32,
+    )
+
+    monkeypatch.setattr(
+        twilio_router,
+        "get_settings",
+        Mock(
+            return_value=SimpleNamespace(
+                voice_public_base_url=(
+                    "https://voice.example.test/"
+                ),
+                voice_audio_ttl_seconds=600,
+            )
+        ),
+    )
+    monkeypatch.setattr(
+        twilio_router,
+        "generate_speech_mp3",
+        speech_mock,
+    )
+    monkeypatch.setattr(
+        twilio_router,
+        "store_voice_audio_mp3",
+        store_mock,
+    )
+
     response = asyncio.run(
         twilio_router.twilio_recording(
             CallSid="CA_GOODBYE",
@@ -319,11 +425,24 @@ def test_twilio_recording_stops_after_goodbye(
 
     body = response.body.decode()
 
-    assert "Au revoir et bonne journée" in body
+    expected_url = (
+        "https://voice.example.test/voice/audio/"
+        + ("b" * 32)
+    )
+
+    assert f"<Play>{expected_url}</Play>" in body
     assert "<Hangup" in body
     assert "<Record" not in body
     assert response.headers["x-dentalflow-intent"] == (
         "goodbye"
+    )
+
+    speech_mock.assert_awaited_once_with(
+        "Au revoir et bonne journée.",
+    )
+    store_mock.assert_called_once_with(
+        b"generated-goodbye-mp3",
+        ttl_seconds=600,
     )
 
 

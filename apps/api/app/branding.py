@@ -163,3 +163,151 @@ async def get_clinic_logo(
     return FileResponse(
         path=absolute_path,
     )
+
+
+MAX_BACKGROUND_SIZE = 12 * 1024 * 1024
+
+
+@router.post(
+    "/background",
+    status_code=status.HTTP_201_CREATED,
+)
+async def upload_clinic_background(
+    file: UploadFile = File(...),
+    current_clinic: UUID = Depends(clinic_id),
+    user: dict = Depends(current_user),
+) -> dict:
+    del user
+
+    if file.content_type not in ALLOWED_IMAGE_TYPES:
+        raise HTTPException(
+            status_code=status.HTTP_415_UNSUPPORTED_MEDIA_TYPE,
+            detail=(
+                "L’image de fond doit être au format "
+                "PNG, JPEG ou WebP."
+            ),
+        )
+
+    content = await file.read()
+
+    if len(content) > MAX_BACKGROUND_SIZE:
+        raise HTTPException(
+            status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+            detail="L’image de fond dépasse la limite de 12 Mo.",
+        )
+
+    extension = Path(file.filename or "").suffix.lower()
+
+    if extension not in {".png", ".jpg", ".jpeg", ".webp"}:
+        extension = {
+            "image/png": ".png",
+            "image/jpeg": ".jpg",
+            "image/webp": ".webp",
+        }[file.content_type]
+
+    stored_filename = f"background-{uuid4()}{extension}"
+    relative_path = Path(str(current_clinic)) / stored_filename
+    absolute_path = STORAGE_ROOT / relative_path
+
+    absolute_path.parent.mkdir(
+        parents=True,
+        exist_ok=True,
+    )
+
+    async with connection() as conn:
+        async with conn.cursor() as cur:
+            await cur.execute(
+                """
+                SELECT background_image_url
+                FROM clinics
+                WHERE id = %s
+                FOR UPDATE
+                """,
+                (current_clinic,),
+            )
+
+            clinic = await cur.fetchone()
+
+            if clinic is None:
+                raise HTTPException(
+                    status_code=status.HTTP_404_NOT_FOUND,
+                    detail="Clinique introuvable.",
+                )
+
+            absolute_path.write_bytes(content)
+
+            await cur.execute(
+                """
+                UPDATE clinics
+                SET
+                    background_image_url = %s,
+                    updated_at = NOW()
+                WHERE id = %s
+                RETURNING
+                    id,
+                    background_image_url
+                """,
+                (
+                    str(relative_path),
+                    current_clinic,
+                ),
+            )
+
+            updated_clinic = await cur.fetchone()
+            await conn.commit()
+
+    previous_background_url = clinic.get(
+        "background_image_url",
+    )
+
+    if previous_background_url:
+        previous_path = STORAGE_ROOT / previous_background_url
+
+        if (
+            previous_path.exists()
+            and previous_path != absolute_path
+        ):
+            previous_path.unlink()
+
+    return updated_clinic
+
+
+@router.get("/background")
+async def get_clinic_background(
+    current_clinic: UUID = Depends(clinic_id),
+):
+    async with connection() as conn:
+        async with conn.cursor() as cur:
+            await cur.execute(
+                """
+                SELECT background_image_url
+                FROM clinics
+                WHERE id = %s
+                """,
+                (current_clinic,),
+            )
+
+            clinic = await cur.fetchone()
+
+            if (
+                clinic is None
+                or not clinic["background_image_url"]
+            ):
+                raise HTTPException(
+                    status_code=status.HTTP_404_NOT_FOUND,
+                    detail="Aucune image de fond configurée.",
+                )
+
+    absolute_path = (
+        STORAGE_ROOT / clinic["background_image_url"]
+    )
+
+    if not absolute_path.exists():
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Fichier d’arrière-plan introuvable.",
+        )
+
+    return FileResponse(
+        path=absolute_path,
+    )
