@@ -4,6 +4,8 @@ from zoneinfo import ZoneInfo
 
 from fastapi import HTTPException, status
 
+from app.copilot.audit import record_copilot_audit_event
+from app.conversations.realtime import publish_conversation_event
 from app.google_calendar import (
     CalendarConfigurationError,
     CalendarOperationError,
@@ -35,10 +37,62 @@ async def treatment_duration(
     cur,
     clinic_id: UUID,
     treatment_id: UUID | None,
+    treatment_session_id: UUID | None = None,
 ) -> int:
     if treatment_id is None:
         return 30
 
+    # Si le rendez-vous est déjà rattaché à une séance précise,
+    # sa durée doit rester celle de cette séance.
+    if treatment_session_id is not None:
+        await cur.execute(
+            """
+            SELECT duration_minutes
+            FROM treatment_sessions
+            WHERE id = %s
+              AND clinic_id = %s
+              AND treatment_id = %s
+            """,
+            (
+                treatment_session_id,
+                clinic_id,
+                treatment_id,
+            ),
+        )
+
+        session = await cur.fetchone()
+
+        if session is None:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Séance de soin introuvable.",
+            )
+
+        return int(session["duration_minutes"])
+
+    # Si le soin est composé mais que la séance n'est pas encore
+    # explicitement connue, on utilise sa première séance.
+    await cur.execute(
+        """
+        SELECT duration_minutes
+        FROM treatment_sessions
+        WHERE clinic_id = %s
+          AND treatment_id = %s
+        ORDER BY position
+        LIMIT 1
+        """,
+        (
+            clinic_id,
+            treatment_id,
+        ),
+    )
+
+    first_session = await cur.fetchone()
+
+    if first_session is not None:
+        return int(first_session["duration_minutes"])
+
+    # Soin simple : comportement historique inchangé.
     await cur.execute(
         """
         SELECT duration_minutes
@@ -52,15 +106,16 @@ async def treatment_duration(
             treatment_id,
         ),
     )
-    row = await cur.fetchone()
 
-    if row is None:
+    treatment = await cur.fetchone()
+
+    if treatment is None:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Soin introuvable.",
         )
 
-    return int(row["duration_minutes"])
+    return int(treatment["duration_minutes"])
 
 
 async def resolve_practitioner(
@@ -329,11 +384,26 @@ async def validate_appointment_slot(
     start_at: datetime,
     end_at: datetime | None,
     exclude_appointment_id: UUID | None = None,
+    treatment_session_id: UUID | None = None,
 ) -> tuple[UUID, datetime]:
+    if (
+        start_at.minute != 0
+        or start_at.second != 0
+        or start_at.microsecond != 0
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=(
+                "Les rendez-vous doivent commencer à une heure pile "
+                "(par exemple 09:00, 10:00 ou 14:00)."
+            ),
+        )
+
     duration_minutes = await treatment_duration(
         cur,
         clinic_id,
         treatment_id,
+        treatment_session_id,
     )
 
     resolved_end = end_at or (
@@ -401,6 +471,121 @@ async def create_appointment_record(
             detail="Patient introuvable.",
         )
 
+    treatment_session_id = None
+
+    if payload.treatment_id is not None:
+        # Vérifier d'abord si ce soin possède un protocole composé.
+        await cur.execute(
+            """
+            SELECT COUNT(*) AS session_count
+            FROM treatment_sessions
+            WHERE clinic_id = %s
+              AND treatment_id = %s
+            """,
+            (
+                clinic_id,
+                payload.treatment_id,
+            ),
+        )
+
+        session_count_row = await cur.fetchone()
+        session_count = int(session_count_row["session_count"])
+
+        if session_count > 0:
+            # Dernière position effectivement terminée par ce patient
+            # pour ce soin.
+            await cur.execute(
+                """
+                SELECT COALESCE(MAX(ts.position), 0) AS completed_position
+                FROM appointments a
+                JOIN treatment_sessions ts
+                  ON ts.id = a.treatment_session_id
+                 AND ts.clinic_id = a.clinic_id
+                 AND ts.treatment_id = a.treatment_id
+                WHERE a.clinic_id = %s
+                  AND a.patient_id = %s
+                  AND a.treatment_id = %s
+                  AND a.status = 'completed'
+                """,
+                (
+                    clinic_id,
+                    payload.patient_id,
+                    payload.treatment_id,
+                ),
+            )
+
+            progress_row = await cur.fetchone()
+            completed_position = int(
+                progress_row["completed_position"]
+            )
+
+            # Prendre automatiquement la séance suivante.
+            await cur.execute(
+                """
+                SELECT
+                    id,
+                    position,
+                    name,
+                    duration_minutes
+                FROM treatment_sessions
+                WHERE clinic_id = %s
+                  AND treatment_id = %s
+                  AND position > %s
+                ORDER BY position
+                LIMIT 1
+                """,
+                (
+                    clinic_id,
+                    payload.treatment_id,
+                    completed_position,
+                ),
+            )
+
+            next_treatment_session = await cur.fetchone()
+
+            if next_treatment_session is None:
+                raise HTTPException(
+                    status_code=status.HTTP_409_CONFLICT,
+                    detail=(
+                        "Toutes les séances de ce soin sont déjà "
+                        "terminées pour ce patient."
+                    ),
+                )
+
+            treatment_session_id = next_treatment_session["id"]
+
+            # Éviter de créer deux rendez-vous actifs pour la même
+            # séance du protocole.
+            await cur.execute(
+                """
+                SELECT id
+                FROM appointments
+                WHERE clinic_id = %s
+                  AND patient_id = %s
+                  AND treatment_id = %s
+                  AND treatment_session_id = %s
+                  AND status IN ('pending', 'confirmed')
+                LIMIT 1
+                """,
+                (
+                    clinic_id,
+                    payload.patient_id,
+                    payload.treatment_id,
+                    treatment_session_id,
+                ),
+            )
+
+            active_session_appointment = await cur.fetchone()
+
+            if active_session_appointment is not None:
+                raise HTTPException(
+                    status_code=status.HTTP_409_CONFLICT,
+                    detail=(
+                        "Cette séance possède déjà un rendez-vous actif "
+                        "pour ce patient."
+                    ),
+                )
+
     practitioner_id, end_at = await validate_appointment_slot(
         cur=cur,
         clinic_id=clinic_id,
@@ -408,6 +593,7 @@ async def create_appointment_record(
         treatment_id=payload.treatment_id,
         start_at=payload.start_at,
         end_at=payload.end_at,
+        treatment_session_id=treatment_session_id,
     )
 
     await cur.execute(
@@ -457,6 +643,7 @@ async def create_appointment_record(
             patient_id,
             practitioner_id,
             treatment_id,
+            treatment_session_id,
             channel,
             status,
             start_at,
@@ -464,6 +651,7 @@ async def create_appointment_record(
             notes
         )
         VALUES (
+            %s,
             %s,
             %s,
             %s,
@@ -481,6 +669,7 @@ async def create_appointment_record(
             payload.patient_id,
             practitioner_id,
             payload.treatment_id,
+            treatment_session_id,
             payload.channel,
             payload.start_at,
             end_at,
@@ -535,6 +724,12 @@ async def create_appointment_record(
     )
 
     result = await cur.fetchone()
+    await record_copilot_audit_event(
+        cur=cur, clinic_id=clinic_id, patient_id=payload.patient_id, action_type="appointment_created", result="success",
+        entity_type="appointment", entity_id=result["id"],
+        after_data={"start_at": result.get("start_at"), "end_at": result.get("end_at"), "status": result.get("status")},
+        metadata={"actor_label": "Équipe clinique", "source": "appointment_service"},
+    )
     await conn.commit()
 
     return {
@@ -553,6 +748,11 @@ async def cancel_appointment_record(
         """
         SELECT
             a.id,
+            a.patient_id,
+            a.practitioner_id,
+            a.treatment_id,
+            a.start_at,
+            a.end_at,
             a.status,
             a.google_calendar_event_id,
             COALESCE(
@@ -622,7 +822,29 @@ async def cancel_appointment_record(
     )
 
     result = await cur.fetchone()
+    await record_copilot_audit_event(
+        cur=cur, clinic_id=clinic_id, patient_id=appointment.get("patient_id"), action_type="appointment_cancelled", result="success",
+        entity_type="appointment", entity_id=appointment_id,
+        before_data={"start_at": appointment.get("start_at"), "end_at": appointment.get("end_at"), "status": appointment.get("status")},
+        after_data={"status": "cancelled"}, metadata={"actor_label": "Équipe clinique", "source": "appointment_service"},
+    )
     await conn.commit()
+
+    await publish_conversation_event(
+        clinic_id=clinic_id,
+        event_type="copilot.task.created",
+        data={
+            "source": "appointment_cancelled",
+            "appointment_id": str(appointment_id),
+            "patient_id": (
+                str(appointment["patient_id"])
+                if appointment.get("patient_id")
+                else None
+            ),
+            "start_at": result.get("start_at"),
+            "status": "cancelled",
+        },
+    )
 
     return result
 
@@ -724,6 +946,7 @@ async def reschedule_appointment_record(
         start_at=payload.start_at,
         end_at=payload.end_at,
         exclude_appointment_id=appointment_id,
+        treatment_session_id=appointment["treatment_session_id"],
     )
 
     if not appointment["calendar_id"]:
@@ -793,9 +1016,393 @@ async def reschedule_appointment_record(
     )
 
     result = await cur.fetchone()
+    await record_copilot_audit_event(
+        cur=cur, clinic_id=clinic_id, patient_id=appointment.get("patient_id"), action_type="appointment_rescheduled", result="success",
+        entity_type="appointment", entity_id=appointment_id,
+        before_data={"start_at": appointment.get("start_at"), "end_at": appointment.get("end_at"), "status": appointment.get("status")},
+        after_data={"start_at": result.get("start_at"), "end_at": result.get("end_at"), "status": result.get("status")},
+        metadata={"actor_label": "Équipe clinique", "source": "appointment_service"},
+    )
     await conn.commit()
 
     return {
         **result,
         "google_calendar_html_link": event.get("htmlLink"),
     }
+
+
+async def list_appointments_for_period(
+    cur,
+    clinic_id: UUID,
+    date_from: datetime,
+    date_to: datetime,
+    limit: int = 100,
+) -> list[dict]:
+    safe_limit = min(max(limit, 1), 500)
+
+    await cur.execute(
+        """
+        SELECT
+            a.id,
+            a.clinic_id,
+            a.patient_id,
+            a.practitioner_id,
+            a.treatment_id,
+            a.channel,
+            a.status,
+            a.start_at,
+            a.end_at,
+            a.google_calendar_event_id,
+            a.notes,
+            a.created_at,
+            a.updated_at,
+            p.full_name AS patient_name,
+            p.phone AS patient_phone,
+            pr.full_name AS practitioner_name,
+            t.name AS treatment_name
+        FROM appointments a
+        JOIN patients p
+          ON p.id = a.patient_id
+         AND p.clinic_id = a.clinic_id
+        LEFT JOIN practitioners pr
+          ON pr.id = a.practitioner_id
+         AND pr.clinic_id = a.clinic_id
+        LEFT JOIN treatments t
+          ON t.id = a.treatment_id
+         AND t.clinic_id = a.clinic_id
+        WHERE a.clinic_id = %s
+          AND a.start_at >= %s
+          AND a.start_at < %s
+        ORDER BY a.start_at
+        LIMIT %s
+        """,
+        (
+            clinic_id,
+            date_from,
+            date_to,
+            safe_limit,
+        ),
+    )
+
+    return await cur.fetchall()
+
+
+async def mark_appointment_no_show(
+    *,
+    cur,
+    conn,
+    clinic_id: UUID,
+    appointment_id: UUID,
+) -> dict:
+    await cur.execute(
+        """
+        SELECT
+            id,
+            patient_id,
+            status,
+            start_at,
+            end_at
+        FROM appointments
+        WHERE id = %s
+          AND clinic_id = %s
+        FOR UPDATE
+        """,
+        (
+            appointment_id,
+            clinic_id,
+        ),
+    )
+
+    appointment = await cur.fetchone()
+
+    if appointment is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Rendez-vous introuvable.",
+        )
+
+    if appointment["status"] == "no_show":
+        return appointment
+
+    await cur.execute(
+        """
+        UPDATE appointments
+        SET
+            status = 'no_show',
+            updated_at = NOW()
+        WHERE id = %s
+          AND clinic_id = %s
+        RETURNING *
+        """,
+        (
+            appointment_id,
+            clinic_id,
+        ),
+    )
+
+    result = await cur.fetchone()
+
+    await record_copilot_audit_event(
+        cur=cur,
+        clinic_id=clinic_id,
+        patient_id=appointment.get("patient_id"),
+        action_type="appointment_no_show",
+        result="success",
+        entity_type="appointment",
+        entity_id=appointment_id,
+        before_data={
+            "status": appointment.get("status"),
+            "start_at": appointment.get("start_at"),
+            "end_at": appointment.get("end_at"),
+        },
+        after_data={
+            "status": "no_show",
+        },
+        metadata={
+            "actor_label": "Équipe clinique",
+            "source": "appointment_service",
+        },
+    )
+
+    await conn.commit()
+
+    await publish_conversation_event(
+        clinic_id=clinic_id,
+        event_type="copilot.task.created",
+        data={
+            "source": "appointment_no_show",
+            "appointment_id": str(appointment_id),
+            "patient_id": (
+                str(appointment["patient_id"])
+                if appointment.get("patient_id")
+                else None
+            ),
+            "status": "no_show",
+        },
+    )
+
+    return result
+
+
+async def mark_appointment_completed(
+    *,
+    cur,
+    conn,
+    clinic_id: UUID,
+    appointment_id: UUID,
+) -> dict:
+    await cur.execute(
+        """
+        SELECT
+            id,
+            patient_id,
+            treatment_id,
+            treatment_session_id,
+            status,
+            start_at,
+            end_at
+        FROM appointments
+        WHERE id = %s
+          AND clinic_id = %s
+        FOR UPDATE
+        """,
+        (
+            appointment_id,
+            clinic_id,
+        ),
+    )
+
+    appointment = await cur.fetchone()
+
+    if appointment is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Rendez-vous introuvable.",
+        )
+
+    if appointment["status"] == "completed":
+        return appointment
+
+    if appointment["status"] not in {"pending", "confirmed"}:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=(
+                "Seul un rendez-vous actif peut être marqué comme terminé."
+            ),
+        )
+
+    await cur.execute(
+        """
+        UPDATE appointments
+        SET
+            status = 'completed',
+            updated_at = NOW()
+        WHERE id = %s
+          AND clinic_id = %s
+        RETURNING *
+        """,
+        (
+            appointment_id,
+            clinic_id,
+        ),
+    )
+
+    result = await cur.fetchone()
+
+    await record_copilot_audit_event(
+        cur=cur,
+        clinic_id=clinic_id,
+        patient_id=appointment.get("patient_id"),
+        action_type="appointment_completed",
+        result="success",
+        entity_type="appointment",
+        entity_id=appointment_id,
+        before_data={
+            "status": appointment.get("status"),
+            "start_at": appointment.get("start_at"),
+            "end_at": appointment.get("end_at"),
+            "treatment_id": appointment.get("treatment_id"),
+            "treatment_session_id": appointment.get(
+                "treatment_session_id"
+            ),
+        },
+        after_data={
+            "status": "completed",
+        },
+        metadata={
+            "actor_label": "Équipe clinique",
+            "source": "appointment_service",
+        },
+    )
+
+    await conn.commit()
+
+    await publish_conversation_event(
+        clinic_id=clinic_id,
+        event_type="appointment.completed",
+        data={
+            "appointment_id": str(appointment_id),
+            "patient_id": (
+                str(appointment["patient_id"])
+                if appointment.get("patient_id")
+                else None
+            ),
+            "treatment_id": (
+                str(appointment["treatment_id"])
+                if appointment.get("treatment_id")
+                else None
+            ),
+            "treatment_session_id": (
+                str(appointment["treatment_session_id"])
+                if appointment.get("treatment_session_id")
+                else None
+            ),
+            "status": "completed",
+        },
+    )
+
+    return result
+
+
+async def mark_appointment_confirmed(
+    *,
+    cur,
+    conn,
+    clinic_id: UUID,
+    appointment_id: UUID,
+) -> dict:
+    await cur.execute(
+        """
+        SELECT
+            id,
+            patient_id,
+            status,
+            start_at,
+            end_at
+        FROM appointments
+        WHERE id = %s
+          AND clinic_id = %s
+        FOR UPDATE
+        """,
+        (
+            appointment_id,
+            clinic_id,
+        ),
+    )
+
+    appointment = await cur.fetchone()
+
+    if appointment is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Rendez-vous introuvable.",
+        )
+
+    if appointment["status"] == "confirmed":
+        return appointment
+
+    if appointment["status"] != "pending":
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=(
+                "Seul un rendez-vous en attente peut être confirmé."
+            ),
+        )
+
+    await cur.execute(
+        """
+        UPDATE appointments
+        SET
+            status = 'confirmed',
+            updated_at = NOW()
+        WHERE id = %s
+          AND clinic_id = %s
+        RETURNING *
+        """,
+        (
+            appointment_id,
+            clinic_id,
+        ),
+    )
+
+    result = await cur.fetchone()
+
+    await record_copilot_audit_event(
+        cur=cur,
+        clinic_id=clinic_id,
+        patient_id=appointment.get("patient_id"),
+        action_type="appointment_confirmed",
+        result="success",
+        entity_type="appointment",
+        entity_id=appointment_id,
+        before_data={
+            "status": appointment.get("status"),
+            "start_at": appointment.get("start_at"),
+            "end_at": appointment.get("end_at"),
+        },
+        after_data={
+            "status": "confirmed",
+        },
+        metadata={
+            "actor_label": "Patient",
+            "source": "appointment_service",
+        },
+    )
+
+    await conn.commit()
+
+    await publish_conversation_event(
+        clinic_id=clinic_id,
+        event_type="appointment.confirmed",
+        data={
+            "appointment_id": str(appointment_id),
+            "patient_id": (
+                str(appointment["patient_id"])
+                if appointment.get("patient_id")
+                else None
+            ),
+            "status": "confirmed",
+        },
+    )
+
+    return result
