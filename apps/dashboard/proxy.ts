@@ -12,7 +12,18 @@ export function proxy(request: NextRequest) {
     pathname.startsWith("/_next/") ||
     pathname === "/favicon.ico";
 
-  if (isAuthApi || isPublicAsset) {
+  const isPublicBrandingAsset =
+    request.method === "GET" &&
+    (
+      pathname === "/api/clinic-branding/logo" ||
+      pathname === "/api/clinic-branding/background"
+    );
+
+  if (
+    isAuthApi ||
+    isPublicAsset ||
+    isPublicBrandingAsset
+  ) {
     return NextResponse.next();
   }
 
@@ -20,10 +31,6 @@ export function proxy(request: NextRequest) {
     const loginUrl = new URL("/login", request.url);
     loginUrl.searchParams.set("from", pathname);
     return NextResponse.redirect(loginUrl);
-  }
-
-  if (token && isLoginPage) {
-    return NextResponse.redirect(new URL("/", request.url));
   }
 
   return NextResponse.next();

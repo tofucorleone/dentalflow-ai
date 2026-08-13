@@ -1,7 +1,10 @@
 import Link from "next/link";
 import {
+  Bot,
   CalendarDays,
   LayoutDashboard,
+  ListTodo,
+  MessageCircle,
   Stethoscope,
   Users,
   UserRound,
@@ -13,6 +16,9 @@ import { getClinicBranding } from "@/lib/server-api";
 
 const links = [
   { href: "/", label: "Tableau de bord", icon: LayoutDashboard },
+  { href: "/copilot", label: "Copilote", icon: Bot },
+  { href: "/conversations", label: "Conversations", icon: MessageCircle },
+  { href: "/tasks", label: "Tâches IA", icon: ListTodo },
   { href: "/appointments", label: "Rendez-vous", icon: CalendarDays },
   { href: "/patients", label: "Patients", icon: Users },
   { href: "/treatments", label: "Soins", icon: Stethoscope },

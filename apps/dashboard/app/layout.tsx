@@ -1,5 +1,5 @@
 import type { Metadata } from "next";
-import { Sidebar } from "@/components/sidebar";
+import { TopNavigation } from "@/components/top-navigation";
 import { getClinicBranding } from "@/lib/server-api";
 import "./globals.css";
 export const dynamic = "force-dynamic";
@@ -21,11 +21,18 @@ export default async function RootLayout({
         style={
           {
             "--primary": branding.primary_color,
+            "--clinic-background-image":
+              branding.background_image_url
+                ? 'url("/api/clinic-branding/background")'
+                : "none",
           } as React.CSSProperties
         }
       >
+        <div className="app-background" aria-hidden="true" />
+        <div className="app-overlay" aria-hidden="true" />
+
         <div className="app-shell">
-          <Sidebar />
+          <TopNavigation />
           <main className="content">{children}</main>
         </div>
       </body>

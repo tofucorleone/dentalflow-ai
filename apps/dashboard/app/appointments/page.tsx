@@ -1,11 +1,11 @@
 import { PageHeader } from "@/components/page-header";
 import { WeekCalendar } from "@/components/week-calendar";
 import {
-  getAppointments,
   getPatients,
   getPractitioners,
   getTreatments,
 } from "@/lib/api";
+import { getAppointments } from "@/lib/server-api";
 
 export const dynamic = "force-dynamic";
 export const revalidate = 0;
