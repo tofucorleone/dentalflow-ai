@@ -7441,3 +7441,56 @@ body {
     grid-template-columns: 1fr;
   }
 }
+
+/* ===========================================
+   DentalFlow - Tasks IA actions v2
+   =========================================== */
+
+.tasks-state-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+.tasks-secondary-button,
+.tasks-dismiss-button {
+  padding: 9px 12px;
+  border-radius: 11px;
+  font-size: 12px;
+  font-weight: 800;
+  cursor: pointer;
+}
+
+.tasks-secondary-button {
+  border: 1px solid rgba(55, 116, 232, 0.18);
+  background: #f6f9ff;
+  color: #3774e8;
+}
+
+.tasks-secondary-button:hover {
+  background: #edf4ff;
+}
+
+.tasks-dismiss-button {
+  border: 1px solid rgba(120, 128, 145, 0.18);
+  background: #f7f8fa;
+  color: #697386;
+}
+
+.tasks-dismiss-button:hover {
+  background: #eef0f3;
+}
+
+.tasks-secondary-button:disabled,
+.tasks-dismiss-button:disabled {
+  cursor: wait;
+  opacity: 0.6;
+}
+
+@media (max-width: 850px) {
+  .tasks-state-actions {
+    justify-content: flex-start;
+  }
+}

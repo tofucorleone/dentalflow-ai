@@ -8,7 +8,7 @@ import {
 } from "lucide-react";
 
 import { backendFetch } from "@/lib/server-api";
-import { TaskCompleteButton } from "@/components/tasks-client";
+import { TaskActions } from "@/components/tasks-client";
 
 type CopilotTask = {
   id: string;
@@ -27,7 +27,15 @@ type CopilotTask = {
   appointment_id: string | null;
   draft_message: string | null;
   reasons: string[];
-  status: "open" | "prepared" | "completed" | "dismissed";
+  status:
+    | "open"
+    | "prepared"
+    | "completed"
+    | "dismissed"
+    | "snoozed";
+  assigned_user_id: string | null;
+  snoozed_until: string | null;
+  completed_at: string | null;
   requires_validation: boolean;
   actions: Array<{
     type: string;
@@ -149,6 +157,19 @@ export default async function TasksPage() {
                     <span>Score {task.score}</span>
                     <span>Créé par le Copilote</span>
 
+                    {task.assigned_user_id ? (
+                      <span>Attribuée</span>
+                    ) : null}
+
+                    {task.snoozed_until ? (
+                      <span>
+                        Reportée jusqu’au{" "}
+                        {new Date(
+                          task.snoozed_until,
+                        ).toLocaleString("fr-FR")}
+                      </span>
+                    ) : null}
+
                     {task.requires_validation ? (
                       <span>Validation requise</span>
                     ) : null}
@@ -165,7 +186,7 @@ export default async function TasksPage() {
                     </Link>
                   ) : null}
 
-                  <TaskCompleteButton taskId={task.id} />
+                  <TaskActions taskId={task.id} />
                 </div>
               </article>
             );

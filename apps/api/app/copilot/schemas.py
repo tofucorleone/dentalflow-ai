@@ -222,6 +222,9 @@ class CopilotTask(BaseModel):
         "dismissed",
         "snoozed",
     ] = "open"
+    assigned_user_id: UUID | None = None
+    snoozed_until: datetime | None = None
+    completed_at: datetime | None = None
     requires_validation: bool = False
     actions: list[CopilotChatAction] = []
 

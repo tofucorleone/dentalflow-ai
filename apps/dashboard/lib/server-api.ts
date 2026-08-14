@@ -140,7 +140,11 @@ export type CopilotTask = {
     | "open"
     | "prepared"
     | "completed"
-    | "dismissed";
+    | "dismissed"
+    | "snoozed";
+  assigned_user_id: string | null;
+  snoozed_until: string | null;
+  completed_at: string | null;
   requires_validation: boolean;
   actions: {
     type: "navigate";
