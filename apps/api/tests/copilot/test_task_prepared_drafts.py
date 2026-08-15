@@ -21,6 +21,7 @@ class DraftCursor:
 def test_prepared_recall_uses_latest_audited_draft_message():
     clinic_id = uuid4()
     patient_id = uuid4()
+    draft_id = uuid4()
 
     tasks = [
         {
@@ -36,6 +37,7 @@ def test_prepared_recall_uses_latest_audited_draft_message():
     cur = DraftCursor(
         [
             {
+                "id": draft_id,
                 "patient_id": patient_id,
                 "appointment_id": None,
                 "message": "Message audité et préparé",
@@ -51,6 +53,7 @@ def test_prepared_recall_uses_latest_audited_draft_message():
         )
     )
 
+    assert result[0]["draft_id"] == draft_id
     assert result[0]["draft_message"] == (
         "Message audité et préparé"
     )

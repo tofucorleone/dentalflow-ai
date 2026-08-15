@@ -112,6 +112,13 @@ class RecallDraftCreateRequest(BaseModel):
     reasons: list[str] = []
 
 
+class RecallDraftUpdateRequest(BaseModel):
+    message: str = Field(
+        min_length=1,
+        max_length=4000,
+    )
+
+
 class RecallDraftResponse(BaseModel):
     id: UUID
     clinic_id: UUID
@@ -213,6 +220,7 @@ class CopilotTask(BaseModel):
     recommended_action: str
     patient_id: UUID | None = None
     appointment_id: UUID | None = None
+    draft_id: UUID | None = None
     draft_message: str | None = None
     reasons: list[str] = []
     status: Literal[

@@ -35,6 +35,7 @@ from app.copilot.schemas import (
     DailyBriefResponse,
     RecallDraftCreateRequest,
     RecallDraftResponse,
+    RecallDraftUpdateRequest,
     RecallSendRequest,
 )
 from app.copilot.dashboard import (
@@ -51,6 +52,7 @@ from app.copilot.service import (
     answer_copilot_chat,
     build_daily_brief,
     create_recall_draft,
+    update_recall_draft_message,
 )
 from app.copilot.tasks import (
     upsert_task_state,
@@ -248,6 +250,84 @@ async def create_recall_draft_endpoint(
 
     return draft
 
+
+
+@router.patch(
+    "/recall/drafts/{draft_id}",
+    response_model=RecallDraftResponse,
+)
+async def update_recall_draft_endpoint(
+    draft_id: UUID,
+    payload: RecallDraftUpdateRequest,
+    current_clinic: UUID = Depends(authenticated_clinic_id),
+    user: dict = Depends(current_user),
+) -> dict:
+    async with connection() as conn:
+        async with conn.cursor() as cur:
+            try:
+                update_result = await update_recall_draft_message(
+                    cur=cur,
+                    clinic_id=current_clinic,
+                    draft_id=draft_id,
+                    message=payload.message,
+                )
+
+                before_draft = update_result["before"]
+                updated_draft = update_result["after"]
+
+            except LookupError as exc:
+                raise HTTPException(
+                    status_code=status.HTTP_404_NOT_FOUND,
+                    detail=str(exc),
+                ) from exc
+
+            except RuntimeError as exc:
+                raise HTTPException(
+                    status_code=status.HTTP_409_CONFLICT,
+                    detail=str(exc),
+                ) from exc
+
+            except ValueError as exc:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail=str(exc),
+                ) from exc
+
+            await record_copilot_audit_event(
+                cur=cur,
+                clinic_id=current_clinic,
+                patient_id=updated_draft["patient_id"],
+                actor_user_id=user["id"],
+                action_type="recall_draft_updated",
+                result="success",
+                entity_type="communication_event",
+                entity_id=updated_draft["id"],
+                before_data={
+                    "message": (
+                        before_draft["payload"].get("message")
+                        if before_draft
+                        else None
+                    ),
+                },
+                after_data={
+                    "message": updated_draft["payload"].get(
+                        "message"
+                    ),
+                },
+                metadata={
+                    "actor_label": (
+                        user.get("full_name")
+                        or user.get("email")
+                        or "Utilisateur"
+                    ),
+                    "source": "copilot_recall",
+                    "draft_id": str(updated_draft["id"]),
+                },
+            )
+
+        await conn.commit()
+
+    return updated_draft
 
 
 @router.post(

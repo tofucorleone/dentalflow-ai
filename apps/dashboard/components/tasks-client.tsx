@@ -8,6 +8,7 @@ type TaskActionProps = {
   taskType: string;
   patientId: string | null;
   appointmentId: string | null;
+  draftId: string | null;
   draftMessage: string | null;
   reasons: string[];
   score: number;
@@ -32,6 +33,7 @@ export function TaskActions({
   taskType,
   patientId,
   appointmentId,
+  draftId,
   draftMessage,
   reasons,
   score,
@@ -40,6 +42,12 @@ export function TaskActions({
   const router = useRouter();
   const [loadingAction, setLoadingAction] =
     useState<string | null>(null);
+
+  const [isEditingDraft, setIsEditingDraft] =
+    useState(false);
+
+  const [editedDraftMessage, setEditedDraftMessage] =
+    useState(draftMessage ?? "");
 
   async function updateTask(
     action: string,
@@ -149,6 +157,56 @@ export function TaskActions({
     }
   }
 
+  async function saveRecallDraft() {
+    const message = editedDraftMessage.trim();
+
+    if (!draftId || !message) {
+      return;
+    }
+
+    setLoadingAction("save-draft");
+
+    try {
+      const response = await fetch(
+        `/api/copilot/recall/drafts/${encodeURIComponent(draftId)}`,
+        {
+          method: "PATCH",
+          headers: {
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({
+            message,
+          }),
+        },
+      );
+
+      if (!response.ok) {
+        const detail = await response.text();
+
+        throw new Error(
+          `Erreur ${response.status}: ${detail}`,
+        );
+      }
+
+      setEditedDraftMessage(message);
+      setIsEditingDraft(false);
+      router.refresh();
+    } catch (error) {
+      console.error(error);
+
+      alert(
+        "Impossible de modifier le brouillon.",
+      );
+    } finally {
+      setLoadingAction(null);
+    }
+  }
+
+  function cancelRecallDraftEdit() {
+    setEditedDraftMessage(draftMessage ?? "");
+    setIsEditingDraft(false);
+  }
+
   function snoozeUntilTomorrow() {
     const tomorrow = new Date();
 
@@ -171,7 +229,68 @@ export function TaskActions({
         status === "prepared" ? (
           <div className="copilot-overdue-draft-content">
             <strong>Brouillon préparé</strong>
-            <pre>{draftMessage}</pre>
+
+            {isEditingDraft ? (
+              <textarea
+                className="tasks-draft-editor"
+                disabled={busy}
+                maxLength={4000}
+                onChange={(event) =>
+                  setEditedDraftMessage(
+                    event.target.value,
+                  )
+                }
+                value={editedDraftMessage}
+              />
+            ) : (
+              <pre>{draftMessage}</pre>
+            )}
+
+            <div className="tasks-draft-edit-actions">
+              {isEditingDraft ? (
+                <>
+                  <button
+                    className="tasks-secondary-button"
+                    disabled={
+                      busy ||
+                      !editedDraftMessage.trim()
+                    }
+                    onClick={() =>
+                      void saveRecallDraft()
+                    }
+                    type="button"
+                  >
+                    {loadingAction === "save-draft"
+                      ? "..."
+                      : "Enregistrer"}
+                  </button>
+
+                  <button
+                    className="tasks-dismiss-button"
+                    disabled={busy}
+                    onClick={cancelRecallDraftEdit}
+                    type="button"
+                  >
+                    Annuler
+                  </button>
+                </>
+              ) : draftId ? (
+                <button
+                  className="tasks-secondary-button"
+                  disabled={busy}
+                  onClick={() => {
+                    setEditedDraftMessage(
+                      draftMessage,
+                    );
+                    setIsEditingDraft(true);
+                  }}
+                  type="button"
+                >
+                  Modifier
+                </button>
+              ) : null}
+            </div>
+
             <span className="copilot-draft-lock">
               Aucun envoi automatique
             </span>
@@ -194,7 +313,7 @@ export function TaskActions({
 
       <button
         className="tasks-complete-button"
-        disabled={busy}
+        disabled={busy || isEditingDraft}
         onClick={() =>
           void updateTask("complete", {
             status: "completed",
@@ -209,7 +328,7 @@ export function TaskActions({
 
       <button
         className="tasks-secondary-button"
-        disabled={busy}
+        disabled={busy || isEditingDraft}
         onClick={snoozeUntilTomorrow}
         type="button"
       >
@@ -220,7 +339,7 @@ export function TaskActions({
 
       <button
         className="tasks-secondary-button"
-        disabled={busy}
+        disabled={busy || isEditingDraft}
         onClick={() =>
           void updateTask("assign", {
             status: "open",
@@ -236,7 +355,7 @@ export function TaskActions({
 
       <button
         className="tasks-dismiss-button"
-        disabled={busy}
+        disabled={busy || isEditingDraft}
         onClick={() =>
           void updateTask("dismiss", {
             status: "dismissed",

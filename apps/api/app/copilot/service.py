@@ -1017,3 +1017,105 @@ async def build_daily_brief(
         ),
         "appointments": appointments,
     }
+
+
+async def update_recall_draft_message(
+    *,
+    cur,
+    clinic_id,
+    draft_id,
+    message: str,
+) -> dict:
+    cleaned_message = message.strip()
+
+    if not cleaned_message:
+        raise ValueError(
+            "Le brouillon ne peut pas être vide."
+        )
+
+    await cur.execute(
+        """
+        SELECT
+            id,
+            clinic_id,
+            patient_id,
+            appointment_id,
+            channel,
+            direction,
+            event_type,
+            external_id,
+            payload,
+            created_at
+        FROM communication_events
+        WHERE id = %s
+          AND clinic_id = %s
+        FOR UPDATE
+        """,
+        (
+            draft_id,
+            clinic_id,
+        ),
+    )
+
+    existing_draft = await cur.fetchone()
+
+    if existing_draft is None:
+        raise LookupError(
+            "Brouillon de rappel introuvable."
+        )
+
+    if (
+        existing_draft["event_type"] != "recall_draft"
+        or existing_draft["channel"] != "whatsapp"
+        or existing_draft["direction"] != "outbound"
+        or existing_draft["payload"].get("status") != "draft"
+    ):
+        raise RuntimeError(
+            "Ce brouillon de rappel n’est plus modifiable."
+        )
+
+    await cur.execute(
+        """
+        UPDATE communication_events
+        SET payload = jsonb_set(
+            payload,
+            '{message}',
+            to_jsonb(%s::text),
+            TRUE
+        )
+        WHERE id = %s
+          AND clinic_id = %s
+          AND event_type = 'recall_draft'
+          AND channel = 'whatsapp'
+          AND direction = 'outbound'
+          AND payload->>'status' = 'draft'
+        RETURNING
+            id,
+            clinic_id,
+            patient_id,
+            appointment_id,
+            channel,
+            direction,
+            event_type,
+            external_id,
+            payload,
+            created_at
+        """,
+        (
+            cleaned_message,
+            draft_id,
+            clinic_id,
+        ),
+    )
+
+    updated_draft = await cur.fetchone()
+
+    if updated_draft is None:
+        raise RuntimeError(
+            "Ce brouillon de rappel n’est plus modifiable."
+        )
+
+    return {
+        "before": existing_draft,
+        "after": updated_draft,
+    }

@@ -333,6 +333,7 @@ async def hydrate_prepared_recall_drafts(
             patient_id,
             appointment_id
         )
+            id,
             patient_id,
             appointment_id,
             payload->>'message' AS message
@@ -361,7 +362,10 @@ async def hydrate_prepared_recall_drafts(
         (
             row["patient_id"],
             row["appointment_id"],
-        ): row["message"]
+        ): {
+            "id": row["id"],
+            "message": row["message"],
+        }
         for row in rows
         if row.get("message")
     }
@@ -380,10 +384,11 @@ async def hydrate_prepared_recall_drafts(
                 item.get("appointment_id"),
             )
 
-            draft_message = drafts.get(key)
+            draft = drafts.get(key)
 
-            if draft_message:
-                item["draft_message"] = draft_message
+            if draft:
+                item["draft_id"] = draft["id"]
+                item["draft_message"] = draft["message"]
 
         hydrated.append(item)
 

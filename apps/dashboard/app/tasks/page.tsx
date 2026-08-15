@@ -25,6 +25,7 @@ type CopilotTask = {
   recommended_action: string;
   patient_id: string | null;
   appointment_id: string | null;
+  draft_id: string | null;
   draft_message: string | null;
   reasons: string[];
   status:
@@ -188,6 +189,7 @@ export default async function TasksPage() {
 
                   <TaskActions
                     appointmentId={task.appointment_id}
+                    draftId={task.draft_id}
                     draftMessage={task.draft_message}
                     status={task.status}
                     patientId={task.patient_id}
