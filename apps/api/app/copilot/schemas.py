@@ -384,6 +384,7 @@ class CopilotDashboardOverview(BaseModel):
 class CopilotTaskStateUpdateRequest(BaseModel):
     status: Literal[
         "open",
+        "prepared",
         "completed",
         "dismissed",
         "snoozed",

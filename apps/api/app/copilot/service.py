@@ -801,7 +801,7 @@ async def create_recall_draft(
         FROM communication_events
         WHERE clinic_id = %s
           AND patient_id = %s
-          AND appointment_id = %s
+          AND appointment_id IS NOT DISTINCT FROM %s
           AND channel = 'whatsapp'
           AND direction = 'outbound'
           AND event_type = 'recall_draft'

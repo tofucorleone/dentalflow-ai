@@ -186,7 +186,15 @@ export default async function TasksPage() {
                     </Link>
                   ) : null}
 
-                  <TaskActions taskId={task.id} />
+                  <TaskActions
+                    appointmentId={task.appointment_id}
+                    draftMessage={task.draft_message}
+                    patientId={task.patient_id}
+                    reasons={task.reasons}
+                    score={task.score}
+                    taskId={task.id}
+                    taskType={task.type}
+                  />
                 </div>
               </article>
             );

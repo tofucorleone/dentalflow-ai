@@ -57,3 +57,38 @@ def test_existing_draft_is_reused():
     assert result["id"] == cur.existing["id"]
 
     assert len(cur.executed) == 1
+
+
+def test_existing_preventive_draft_without_appointment_is_reused():
+    cur = FakeCursor()
+
+    cur.existing["appointment_id"] = None
+
+    result = asyncio.run(
+        create_recall_draft(
+            cur=cur,
+            clinic_id=cur.existing["clinic_id"],
+            patient_id=cur.existing["patient_id"],
+            appointment_id=None,
+            message=(
+                "Bonjour, le cabinet vous propose "
+                "un contrôle de suivi."
+            ),
+            candidate_score=85,
+            match_level="preventive",
+            reasons=[
+                "Dernière visite il y a plus de 24 mois",
+            ],
+            created_by_user_id=uuid4(),
+        )
+    )
+
+    assert result["id"] == cur.existing["id"]
+    assert result["appointment_id"] is None
+
+    assert len(cur.executed) == 1
+
+    assert (
+        "appointment_id IS NOT DISTINCT FROM %s"
+        in cur.executed[0]
+    )

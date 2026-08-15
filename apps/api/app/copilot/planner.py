@@ -135,6 +135,16 @@ def build_recommended_actions(
                     f"Recontacter {patient_name}"
                 ),
                 "description": description,
+                "recommended_action": (
+                    f"Préparer un message de rappel pour "
+                    f"{patient_name} avant tout envoi."
+                ),
+                "patient_id": patient_id,
+                "appointment_id": None,
+                "draft_message": patient.get(
+                    "draft_message"
+                ),
+                "reasons": reasons,
                 "actions": [
                     {
                         "type": "navigate",
@@ -147,7 +157,7 @@ def build_recommended_actions(
                         ),
                     }
                 ],
-                "requires_validation": False,
+                "requires_validation": True,
             }
         )
 

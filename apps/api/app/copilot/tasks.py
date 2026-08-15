@@ -100,9 +100,21 @@ def build_task_from_recommendation(
         ),
         "title": title,
         "description": description,
-        "recommended_action": title,
+        "recommended_action": str(
+            recommendation.get(
+                "recommended_action"
+            )
+            or title
+        ),
         "patient_id": patient_id,
         "appointment_id": appointment_id,
+        "draft_message": recommendation.get(
+            "draft_message"
+        ),
+        "reasons": list(
+            recommendation.get("reasons")
+            or []
+        ),
         "status": "open",
         "requires_validation": bool(
             recommendation.get(
