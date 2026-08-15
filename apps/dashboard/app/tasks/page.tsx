@@ -189,6 +189,7 @@ export default async function TasksPage() {
                   <TaskActions
                     appointmentId={task.appointment_id}
                     draftMessage={task.draft_message}
+                    status={task.status}
                     patientId={task.patient_id}
                     reasons={task.reasons}
                     score={task.score}

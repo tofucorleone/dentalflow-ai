@@ -11,6 +11,7 @@ type TaskActionProps = {
   draftMessage: string | null;
   reasons: string[];
   score: number;
+  status: TaskStatus;
 };
 
 type TaskStatus =
@@ -34,6 +35,7 @@ export function TaskActions({
   draftMessage,
   reasons,
   score,
+  status,
 }: TaskActionProps) {
   const router = useRouter();
   const [loadingAction, setLoadingAction] =
@@ -166,18 +168,28 @@ export function TaskActions({
       {taskType === "recall" &&
       patientId &&
       draftMessage ? (
-        <button
-          className="tasks-secondary-button"
-          disabled={busy}
-          onClick={() =>
-            void prepareRecallMessage()
-          }
-          type="button"
-        >
-          {loadingAction === "prepare"
-            ? "..."
-            : "Préparer le message"}
-        </button>
+        status === "prepared" ? (
+          <div className="copilot-overdue-draft-content">
+            <strong>Brouillon préparé</strong>
+            <pre>{draftMessage}</pre>
+            <span className="copilot-draft-lock">
+              Aucun envoi automatique
+            </span>
+          </div>
+        ) : (
+          <button
+            className="tasks-secondary-button"
+            disabled={busy}
+            onClick={() =>
+              void prepareRecallMessage()
+            }
+            type="button"
+          >
+            {loadingAction === "prepare"
+              ? "..."
+              : "Préparer le message"}
+          </button>
+        )
       ) : null}
 
       <button

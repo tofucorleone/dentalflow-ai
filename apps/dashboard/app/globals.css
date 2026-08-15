@@ -7494,3 +7494,55 @@ body {
     justify-content: flex-start;
   }
 }
+
+/* ===========================================
+   DentalFlow - Tasks IA prepared layout
+   =========================================== */
+
+.tasks-item-actions .copilot-overdue-draft-content {
+  flex: 1 1 420px;
+  min-width: 320px;
+  max-width: 680px;
+}
+
+.tasks-item-actions .copilot-overdue-draft-content pre {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.tasks-item:has(
+  .tasks-item-actions .copilot-overdue-draft-content
+) {
+  grid-template-columns:
+    minmax(120px, 180px)
+    minmax(260px, 1fr)
+    minmax(420px, 1.6fr);
+  align-items: start;
+}
+
+.tasks-item:has(
+  .tasks-item-actions .copilot-overdue-draft-content
+) .tasks-item-content {
+  min-width: 0;
+}
+
+.tasks-item:has(
+  .tasks-item-actions .copilot-overdue-draft-content
+) .tasks-item-actions {
+  min-width: 0;
+  align-items: flex-start;
+}
+
+@media (max-width: 1180px) {
+  .tasks-item:has(
+    .tasks-item-actions .copilot-overdue-draft-content
+  ) {
+    grid-template-columns: 1fr;
+  }
+
+  .tasks-item-actions .copilot-overdue-draft-content {
+    width: 100%;
+    max-width: none;
+    min-width: 0;
+  }
+}
