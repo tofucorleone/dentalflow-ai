@@ -14,7 +14,11 @@ from app.copilot.operational import (
     build_released_slots,
 )
 
-from app.copilot.tasks import build_tasks, merge_task_states
+from app.copilot.tasks import (
+    build_tasks,
+    hydrate_prepared_recall_drafts,
+    merge_task_states,
+)
 
 
 async def build_conversation_actions(
@@ -465,7 +469,13 @@ async def build_copilot_tasks(
         ),
     )
 
-    return await merge_task_states(
+    tasks = await merge_task_states(
+        cur=cur,
+        clinic_id=clinic_id,
+        tasks=tasks,
+    )
+
+    return await hydrate_prepared_recall_drafts(
         cur=cur,
         clinic_id=clinic_id,
         tasks=tasks,

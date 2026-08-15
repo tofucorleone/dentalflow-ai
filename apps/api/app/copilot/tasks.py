@@ -299,3 +299,92 @@ async def upsert_task_state(
     )
 
     return await cur.fetchone()
+
+
+async def hydrate_prepared_recall_drafts(
+    *,
+    cur,
+    clinic_id,
+    tasks: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    prepared_recall_tasks = [
+        task
+        for task in tasks
+        if (
+            task.get("type") == "recall"
+            and task.get("status") == "prepared"
+            and task.get("patient_id") is not None
+        )
+    ]
+
+    if not prepared_recall_tasks:
+        return tasks
+
+    patient_ids = list(
+        {
+            task["patient_id"]
+            for task in prepared_recall_tasks
+        }
+    )
+
+    await cur.execute(
+        """
+        SELECT DISTINCT ON (
+            patient_id,
+            appointment_id
+        )
+            patient_id,
+            appointment_id,
+            payload->>'message' AS message
+        FROM communication_events
+        WHERE clinic_id = %s
+          AND patient_id = ANY(%s)
+          AND event_type = 'recall_draft'
+          AND channel = 'whatsapp'
+          AND direction = 'outbound'
+          AND payload->>'status' = 'draft'
+        ORDER BY
+            patient_id,
+            appointment_id,
+            created_at DESC,
+            id DESC
+        """,
+        (
+            clinic_id,
+            patient_ids,
+        ),
+    )
+
+    rows = await cur.fetchall()
+
+    drafts = {
+        (
+            row["patient_id"],
+            row["appointment_id"],
+        ): row["message"]
+        for row in rows
+        if row.get("message")
+    }
+
+    hydrated: list[dict[str, Any]] = []
+
+    for task in tasks:
+        item = dict(task)
+
+        if (
+            item.get("type") == "recall"
+            and item.get("status") == "prepared"
+        ):
+            key = (
+                item.get("patient_id"),
+                item.get("appointment_id"),
+            )
+
+            draft_message = drafts.get(key)
+
+            if draft_message:
+                item["draft_message"] = draft_message
+
+        hydrated.append(item)
+
+    return hydrated
