@@ -16,9 +16,142 @@ from app.copilot.operational import (
 
 from app.copilot.tasks import (
     build_tasks,
+    hydrate_prepared_appointment_message_drafts,
     hydrate_prepared_recall_drafts,
     merge_task_states,
 )
+
+
+def build_appointment_message_actions(
+    *,
+    appointments: list[dict],
+    now: datetime,
+    sent_confirmation_appointment_ids: set | None = None,
+) -> list[dict]:
+    """
+    Construit les tâches individuelles de communication patient :
+    - confirmation de rendez-vous à J-1 ;
+    - suivi après rendez-vous marqué no_show.
+
+    Cette fonction est pure et ne déclenche aucun envoi.
+    """
+
+    actions: list[dict] = []
+    sent_confirmation_ids = (
+        sent_confirmation_appointment_ids or set()
+    )
+
+    for appointment in appointments:
+        appointment_id = appointment.get("id")
+        patient_id = appointment.get("patient_id")
+        patient_name = (
+            appointment.get("patient_name")
+            or "Patient"
+        )
+        appointment_status = appointment.get("status")
+        start_at = appointment.get("start_at")
+
+        if (
+            appointment_id is None
+            or patient_id is None
+            or start_at is None
+        ):
+            continue
+
+        if (
+            appointment_status == "pending"
+            and appointment_id not in sent_confirmation_ids
+            and start_at.date()
+            == (now + timedelta(days=1)).date()
+        ):
+            draft_message = (
+                f"Bonjour {patient_name}, "
+                "nous vous rappelons votre rendez-vous demain. "
+                "Merci de répondre OUI pour confirmer "
+                "votre rendez-vous."
+            )
+
+            actions.append(
+                {
+                    "id": f"confirmation:{appointment_id}",
+                    "type": "pending_confirmation",
+                    "priority": "medium",
+                    "score": 80,
+                    "title": (
+                        f"Confirmer le rendez-vous de "
+                        f"{patient_name}"
+                    ),
+                    "description": (
+                        "Le rendez-vous est prévu demain "
+                        "et attend une confirmation patient."
+                    ),
+                    "recommended_action": (
+                        "Préparer et valider le message "
+                        "de confirmation WhatsApp."
+                    ),
+                    "patient_id": patient_id,
+                    "appointment_id": appointment_id,
+                    "draft_message": draft_message,
+                    "reasons": [
+                        "Rendez-vous prévu demain",
+                        "Confirmation patient requise",
+                    ],
+                    "actions": [
+                        {
+                            "type": "navigate",
+                            "label": "Ouvrir le calendrier",
+                            "href": "/appointments",
+                        }
+                    ],
+                    "requires_validation": True,
+                }
+            )
+
+            continue
+
+        if appointment_status == "no_show":
+            draft_message = (
+                f"Bonjour {patient_name}, "
+                "nous avons constaté que vous n'avez pas pu "
+                "vous présenter à votre rendez-vous. "
+                "Souhaitez-vous convenir d'un nouveau créneau ?"
+            )
+
+            actions.append(
+                {
+                    "id": f"no_show:{appointment_id}",
+                    "type": "no_show",
+                    "priority": "high",
+                    "score": 95,
+                    "title": (
+                        f"Recontacter {patient_name} "
+                        "après son rendez-vous manqué"
+                    ),
+                    "description": (
+                        "Le rendez-vous a été marqué absent."
+                    ),
+                    "recommended_action": (
+                        "Préparer et valider un message "
+                        "de suivi WhatsApp."
+                    ),
+                    "patient_id": patient_id,
+                    "appointment_id": appointment_id,
+                    "draft_message": draft_message,
+                    "reasons": [
+                        "Rendez-vous marqué no_show",
+                    ],
+                    "actions": [
+                        {
+                            "type": "navigate",
+                            "label": "Ouvrir le calendrier",
+                            "href": "/appointments",
+                        }
+                    ],
+                    "requires_validation": True,
+                }
+            )
+
+    return actions
 
 
 async def build_conversation_actions(
@@ -450,23 +583,116 @@ async def build_copilot_tasks(
     now: datetime | None = None,
 ) -> list[dict]:
     """
-    Construit la liste unifiée des tâches opérationnelles.
+    Construit uniquement les tâches de communication
+    nécessitant une action opérationnelle :
 
-    Cette fonction réutilise le Planner et reste strictement
-    en lecture seule.
+    - confirmation patient à J-1 ;
+    - suivi après rendez-vous no_show.
+
+    Les confirmations déjà envoyées automatiquement
+    ne sont pas proposées comme tâches.
     """
 
-    planner = await build_planner(
-        cur=cur,
-        clinic_id=clinic_id,
-        now=now,
+    timezone_name = await clinic_timezone(
+        cur,
+        clinic_id,
+    )
+    timezone = ZoneInfo(timezone_name)
+
+    local_now = (
+        now.astimezone(timezone)
+        if now is not None
+        else datetime.now(timezone)
+    )
+
+    tomorrow_start = datetime.combine(
+        local_now.date() + timedelta(days=1),
+        time.min,
+        tzinfo=timezone,
+    )
+    day_after_tomorrow = (
+        tomorrow_start + timedelta(days=1)
+    )
+
+    await cur.execute(
+        """
+        SELECT
+            a.id,
+            a.clinic_id,
+            a.patient_id,
+            a.practitioner_id,
+            a.treatment_id,
+            a.channel,
+            a.status,
+            a.start_at,
+            a.end_at,
+            p.full_name AS patient_name,
+            p.phone AS patient_phone,
+            pr.full_name AS practitioner_name,
+            t.name AS treatment_name
+        FROM appointments a
+        JOIN patients p
+          ON p.id = a.patient_id
+         AND p.clinic_id = a.clinic_id
+        LEFT JOIN practitioners pr
+          ON pr.id = a.practitioner_id
+         AND pr.clinic_id = a.clinic_id
+        LEFT JOIN treatments t
+          ON t.id = a.treatment_id
+         AND t.clinic_id = a.clinic_id
+        WHERE a.clinic_id = %s
+          AND (
+              (
+                  a.status = 'pending'
+                  AND a.start_at >= %s
+                  AND a.start_at < %s
+              )
+              OR a.status = 'no_show'
+          )
+        ORDER BY
+            CASE
+                WHEN a.status = 'no_show' THEN 0
+                ELSE 1
+            END,
+            a.start_at DESC
+        LIMIT 500
+        """,
+        (
+            clinic_id,
+            tomorrow_start,
+            day_after_tomorrow,
+        ),
+    )
+
+    appointments = await cur.fetchall()
+
+    await cur.execute(
+        """
+        SELECT appointment_id
+        FROM appointment_confirmation_reminders
+        WHERE clinic_id = %s
+          AND status IN ('sent', 'confirmed')
+        """,
+        (clinic_id,),
+    )
+
+    sent_confirmation_rows = await cur.fetchall()
+
+    sent_confirmation_appointment_ids = {
+        row["appointment_id"]
+        for row in sent_confirmation_rows
+    }
+
+    actions = build_appointment_message_actions(
+        appointments=appointments,
+        now=local_now,
+        sent_confirmation_appointment_ids=(
+            sent_confirmation_appointment_ids
+        ),
     )
 
     tasks = build_tasks(
-        recommended_actions=(
-            planner.get("recommended_actions")
-            or []
-        ),
+        recommended_actions=actions,
     )
 
     tasks = await merge_task_states(
@@ -475,7 +701,7 @@ async def build_copilot_tasks(
         tasks=tasks,
     )
 
-    return await hydrate_prepared_recall_drafts(
+    return await hydrate_prepared_appointment_message_drafts(
         cur=cur,
         clinic_id=clinic_id,
         tasks=tasks,

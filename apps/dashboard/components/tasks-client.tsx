@@ -157,6 +157,236 @@ export function TaskActions({
     }
   }
 
+  async function prepareAppointmentMessage() {
+    if (
+      (
+        taskType !== "pending_confirmation" &&
+        taskType !== "no_show"
+      ) ||
+      !patientId ||
+      !appointmentId ||
+      !draftMessage
+    ) {
+      return;
+    }
+
+    setLoadingAction("prepare-appointment");
+
+    try {
+      const response = await fetch(
+        "/api/copilot/appointment-message-drafts",
+        {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({
+            patient_id: patientId,
+            appointment_id: appointmentId,
+            message_kind: taskType,
+            message: draftMessage,
+          }),
+        },
+      );
+
+      if (!response.ok) {
+        const detail = await response.text();
+
+        throw new Error(
+          `Erreur ${response.status}: ${detail}`,
+        );
+      }
+
+      const taskResponse = await fetch(
+        `/api/copilot/tasks/${encodeURIComponent(taskId)}`,
+        {
+          method: "PATCH",
+          headers: {
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({
+            status: "prepared",
+          }),
+        },
+      );
+
+      if (!taskResponse.ok) {
+        const detail = await taskResponse.text();
+
+        throw new Error(
+          `Erreur ${taskResponse.status}: ${detail}`,
+        );
+      }
+
+      router.refresh();
+    } catch (error) {
+      console.error(error);
+
+      alert(
+        "Impossible de préparer le message.",
+      );
+    } finally {
+      setLoadingAction(null);
+    }
+  }
+
+
+  async function sendAppointmentMessage() {
+    if (
+      (
+        taskType !== "pending_confirmation" &&
+        taskType !== "no_show"
+      ) ||
+      !patientId ||
+      !appointmentId ||
+      !draftId ||
+      !draftMessage
+    ) {
+      return;
+    }
+
+    const confirmed = window.confirm(
+      "Valider et envoyer ce message WhatsApp au patient ?",
+    );
+
+    if (!confirmed) {
+      return;
+    }
+
+    setLoadingAction("send-appointment");
+
+    try {
+      const response = await fetch(
+        "/api/copilot/appointment-message-drafts/send",
+        {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({
+            draft_id: draftId,
+            patient_id: patientId,
+            appointment_id: appointmentId,
+            message_kind: taskType,
+            message: draftMessage,
+          }),
+        },
+      );
+
+      const text = await response.text();
+
+      if (!response.ok) {
+        let detail = text;
+
+        try {
+          const payload = JSON.parse(text);
+
+          if (
+            payload &&
+            typeof payload === "object" &&
+            "detail" in payload
+          ) {
+            detail = String(payload.detail);
+          }
+        } catch {
+          // Réponse non JSON : conserver le texte brut.
+        }
+
+        throw new Error(
+          detail || `Erreur ${response.status}`,
+        );
+      }
+
+      router.refresh();
+    } catch (error) {
+      console.error(error);
+
+      alert(
+        error instanceof Error
+          ? error.message
+          : "Impossible d'envoyer le message WhatsApp.",
+      );
+    } finally {
+      setLoadingAction(null);
+    }
+  }
+
+
+  async function sendRecallMessage() {
+    if (
+      taskType !== "recall" ||
+      !patientId ||
+      !draftId ||
+      !draftMessage
+    ) {
+      return;
+    }
+
+    const confirmed = window.confirm(
+      "Valider et envoyer ce message WhatsApp au patient ?",
+    );
+
+    if (!confirmed) {
+      return;
+    }
+
+    setLoadingAction("send-recall");
+
+    try {
+      const response = await fetch(
+        "/api/copilot/recall/send",
+        {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({
+            draft_id: draftId,
+            patient_id: patientId,
+            message: draftMessage,
+          }),
+        },
+      );
+
+      const text = await response.text();
+
+      if (!response.ok) {
+        let detail = text;
+
+        try {
+          const payload = JSON.parse(text);
+
+          if (
+            payload &&
+            typeof payload === "object" &&
+            "detail" in payload
+          ) {
+            detail = String(payload.detail);
+          }
+        } catch {
+          // Réponse non JSON : conserver le texte brut.
+        }
+
+        throw new Error(
+          detail || `Erreur ${response.status}`,
+        );
+      }
+
+      router.refresh();
+    } catch (error) {
+      console.error(error);
+
+      alert(
+        error instanceof Error
+          ? error.message
+          : "Impossible d'envoyer le message WhatsApp.",
+      );
+    } finally {
+      setLoadingAction(null);
+    }
+  }
+
+
   async function saveRecallDraft() {
     const message = editedDraftMessage.trim();
 
@@ -275,19 +505,34 @@ export function TaskActions({
                   </button>
                 </>
               ) : draftId ? (
-                <button
-                  className="tasks-secondary-button"
-                  disabled={busy}
-                  onClick={() => {
-                    setEditedDraftMessage(
-                      draftMessage,
-                    );
-                    setIsEditingDraft(true);
-                  }}
-                  type="button"
-                >
-                  Modifier
-                </button>
+                <>
+                  <button
+                    className="tasks-secondary-button"
+                    disabled={busy}
+                    onClick={() => {
+                      setEditedDraftMessage(
+                        draftMessage,
+                      );
+                      setIsEditingDraft(true);
+                    }}
+                    type="button"
+                  >
+                    Modifier
+                  </button>
+
+                  <button
+                    className="tasks-complete-button"
+                    disabled={busy}
+                    onClick={() =>
+                      void sendRecallMessage()
+                    }
+                    type="button"
+                  >
+                    {loadingAction === "send-recall"
+                      ? "Envoi..."
+                      : "Valider et envoyer WhatsApp"}
+                  </button>
+                </>
               ) : null}
             </div>
 
@@ -309,6 +554,50 @@ export function TaskActions({
               : "Préparer le message"}
           </button>
         )
+      ) : null}
+
+      {(taskType === "pending_confirmation" ||
+        taskType === "no_show") &&
+      patientId &&
+      appointmentId &&
+      draftMessage ? (
+        status === "prepared" && draftId ? (
+          <div className="copilot-overdue-draft-content">
+            <pre>{draftMessage}</pre>
+
+            <div className="copilot-overdue-draft-footer">
+              <span className="copilot-draft-lock">
+                Aucun envoi automatique
+              </span>
+
+              <button
+                className="tasks-complete-button"
+                disabled={busy}
+                onClick={() =>
+                  void sendAppointmentMessage()
+                }
+                type="button"
+              >
+                {loadingAction === "send-appointment"
+                  ? "Envoi..."
+                  : "Valider et envoyer WhatsApp"}
+              </button>
+            </div>
+          </div>
+        ) : status !== "prepared" ? (
+          <button
+            className="tasks-secondary-button"
+            disabled={busy}
+            onClick={() =>
+              void prepareAppointmentMessage()
+            }
+            type="button"
+          >
+            {loadingAction === "prepare-appointment"
+              ? "..."
+              : "Préparer le message"}
+          </button>
+        ) : null
       ) : null}
 
       <button

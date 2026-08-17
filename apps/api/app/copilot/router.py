@@ -1,4 +1,7 @@
 from app.ai.conversation_state import save_conversation_state
+from app.ai.conversation_thread import (
+    get_or_create_conversation_thread,
+)
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, status
@@ -33,6 +36,9 @@ from app.copilot.schemas import (
     CopilotTask,
     CopilotTaskStateUpdateRequest,
     DailyBriefResponse,
+    AppointmentMessageDraftCreateRequest,
+    AppointmentMessageDraftResponse,
+    AppointmentMessageSendRequest,
     RecallDraftCreateRequest,
     RecallDraftResponse,
     RecallDraftUpdateRequest,
@@ -51,6 +57,7 @@ from app.copilot.conversation_insight import (
 from app.copilot.service import (
     answer_copilot_chat,
     build_daily_brief,
+    create_appointment_message_draft,
     create_recall_draft,
     update_recall_draft_message,
 )
@@ -223,6 +230,445 @@ async def copilot_chat(
 
 
 @router.post(
+    "/appointment-message-drafts",
+    response_model=AppointmentMessageDraftResponse,
+    status_code=201,
+)
+async def create_appointment_message_draft_endpoint(
+    payload: AppointmentMessageDraftCreateRequest,
+    current_clinic: UUID = Depends(authenticated_clinic_id),
+    user: dict = Depends(current_user),
+) -> dict:
+    async with connection() as conn:
+        async with conn.cursor() as cur:
+            try:
+                draft = await create_appointment_message_draft(
+                    cur=cur,
+                    clinic_id=current_clinic,
+                    patient_id=payload.patient_id,
+                    appointment_id=payload.appointment_id,
+                    message_kind=payload.message_kind,
+                    message=payload.message,
+                    created_by_user_id=user["id"],
+                )
+
+            except LookupError as exc:
+                raise HTTPException(
+                    status_code=status.HTTP_404_NOT_FOUND,
+                    detail=str(exc),
+                ) from exc
+
+            except RuntimeError as exc:
+                raise HTTPException(
+                    status_code=status.HTTP_409_CONFLICT,
+                    detail=str(exc),
+                ) from exc
+
+            except ValueError as exc:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail=str(exc),
+                ) from exc
+
+            await record_copilot_audit_event(
+                cur=cur,
+                clinic_id=current_clinic,
+                patient_id=draft["patient_id"],
+                actor_user_id=user["id"],
+                action_type="appointment_message_draft_created",
+                result="success",
+                entity_type="communication_event",
+                entity_id=draft["id"],
+                after_data={
+                    "status": draft["payload"].get("status"),
+                    "message_kind": draft["payload"].get(
+                        "message_kind"
+                    ),
+                },
+                metadata={
+                    "actor_label": (
+                        user.get("full_name")
+                        or user.get("email")
+                        or "Utilisateur"
+                    ),
+                    "source": "copilot_appointment_message",
+                    "draft_id": str(draft["id"]),
+                    "appointment_id": str(
+                        draft["appointment_id"]
+                    ),
+                },
+            )
+
+        await conn.commit()
+
+    return draft
+
+
+@router.post(
+    "/appointment-message-drafts/send",
+    status_code=201,
+)
+async def send_appointment_message_draft_endpoint(
+    payload: AppointmentMessageSendRequest,
+    current_clinic: UUID = Depends(authenticated_clinic_id),
+    user: dict = Depends(current_user),
+) -> dict:
+    """
+    Valide humainement puis envoie un brouillon WhatsApp
+    lié à un rendez-vous.
+
+    Aucun workflow conversationnel de réservation n'est
+    démarré par cet envoi.
+    """
+
+    user_id = user.get("id")
+
+    if not isinstance(user_id, UUID):
+        user_id = UUID(str(user_id))
+
+    async with connection() as conn:
+        async with conn.cursor() as cur:
+            await cur.execute(
+                """
+                SELECT id
+                FROM conversation_threads
+                WHERE clinic_id = %s
+                  AND patient_id = %s
+                  AND channel = 'whatsapp'
+                  AND status = 'open'
+                  AND provider_instance IS NOT NULL
+                ORDER BY
+                    last_message_at DESC NULLS LAST,
+                    updated_at DESC,
+                    id DESC
+                LIMIT 1
+                """,
+                (
+                    current_clinic,
+                    payload.patient_id,
+                ),
+            )
+
+            thread_row = await cur.fetchone()
+
+            await cur.execute(
+                """
+                SELECT id
+                FROM communication_events
+                WHERE id = %s
+                  AND clinic_id = %s
+                  AND patient_id = %s
+                  AND appointment_id = %s
+                  AND channel = 'whatsapp'
+                  AND direction = 'outbound'
+                  AND event_type = 'appointment_message_draft'
+                  AND payload->>'message_kind' = %s
+                  AND payload->>'status' = 'draft'
+                LIMIT 1
+                """,
+                (
+                    payload.draft_id,
+                    current_clinic,
+                    payload.patient_id,
+                    payload.appointment_id,
+                    payload.message_kind,
+                ),
+            )
+
+            if await cur.fetchone() is None:
+                raise HTTPException(
+                    status_code=status.HTTP_409_CONFLICT,
+                    detail=(
+                        "Ce brouillon n'est plus disponible "
+                        "pour validation."
+                    ),
+                )
+
+            if thread_row is None:
+                await cur.execute(
+                    """
+                    SELECT phone
+                    FROM patients
+                    WHERE id = %s
+                      AND clinic_id = %s
+                    LIMIT 1
+                    """,
+                    (
+                        payload.patient_id,
+                        current_clinic,
+                    ),
+                )
+
+                patient_row = await cur.fetchone()
+
+                patient_phone = (
+                    str(
+                        patient_row.get("phone")
+                        if patient_row
+                        else ""
+                    ).strip()
+                )
+
+                if not patient_phone:
+                    raise HTTPException(
+                        status_code=status.HTTP_409_CONFLICT,
+                        detail=(
+                            "Aucun numéro WhatsApp n'est "
+                            "disponible pour ce patient."
+                        ),
+                    )
+
+                await cur.execute(
+                    """
+                    SELECT provider_instance
+                    FROM clinic_integrations
+                    WHERE clinic_id = %s
+                      AND LOWER(BTRIM(provider)) = 'evolution'
+                      AND active = TRUE
+                    ORDER BY
+                        updated_at DESC,
+                        created_at DESC
+                    LIMIT 1
+                    """,
+                    (current_clinic,),
+                )
+
+                integration_row = await cur.fetchone()
+
+                provider_instance = (
+                    str(
+                        integration_row.get(
+                            "provider_instance"
+                        )
+                        if integration_row
+                        else ""
+                    ).strip()
+                )
+
+                if not provider_instance:
+                    raise HTTPException(
+                        status_code=status.HTTP_409_CONFLICT,
+                        detail=(
+                            "Aucune intégration Evolution active "
+                            "n'est configurée pour cette clinique."
+                        ),
+                    )
+
+                thread_row = (
+                    await get_or_create_conversation_thread(
+                        cur=cur,
+                        clinic_id=current_clinic,
+                        patient_id=payload.patient_id,
+                        channel="whatsapp",
+                        sender_phone=patient_phone,
+                        provider="evolution",
+                        provider_instance=provider_instance,
+                        external_thread_id=None,
+                    )
+                )
+
+            thread_id = thread_row["id"]
+
+            thread, prepared_message = (
+                await prepare_human_message(
+                    cur=cur,
+                    clinic_id=current_clinic,
+                    thread_id=thread_id,
+                    user_id=user_id,
+                    body=payload.message,
+                )
+            )
+
+        await conn.commit()
+
+    try:
+        provider_result = (
+            await send_evolution_text_message(
+                instance=thread["provider_instance"],
+                sender_phone=thread["sender_phone"],
+                text=prepared_message["body"],
+            )
+        )
+
+    except EvolutionSendError as exc:
+        async with connection() as conn:
+            async with conn.cursor() as cur:
+                failed_message = (
+                    await mark_human_message_failed(
+                        cur=cur,
+                        clinic_id=current_clinic,
+                        message_id=prepared_message["id"],
+                        error=str(exc),
+                        status_code=exc.status_code,
+                        response_body=exc.response_body,
+                    )
+                )
+
+                await cur.execute(
+                    """
+                    UPDATE communication_events
+                    SET payload = jsonb_set(
+                        payload,
+                        '{status}',
+                        '"failed"'::jsonb,
+                        TRUE
+                    )
+                    WHERE id = %s
+                      AND clinic_id = %s
+                    """,
+                    (
+                        payload.draft_id,
+                        current_clinic,
+                    ),
+                )
+
+                await record_copilot_audit_event(
+                    cur=cur,
+                    clinic_id=current_clinic,
+                    patient_id=payload.patient_id,
+                    actor_user_id=user_id,
+                    action_type="appointment_message_send",
+                    result="failed",
+                    entity_type="communication_event",
+                    entity_id=payload.draft_id,
+                    metadata={
+                        "actor_label": (
+                            user.get("full_name")
+                            or user.get("email")
+                            or "Utilisateur"
+                        ),
+                        "source": (
+                            "copilot_appointment_message"
+                        ),
+                        "draft_id": str(
+                            payload.draft_id
+                        ),
+                        "appointment_id": str(
+                            payload.appointment_id
+                        ),
+                        "message_kind": (
+                            payload.message_kind
+                        ),
+                        "error": str(exc),
+                    },
+                )
+
+            await conn.commit()
+
+        await publish_conversation_event(
+            clinic_id=current_clinic,
+            event_type="conversation.message.failed",
+            data={
+                "thread_id": str(thread_id),
+                "message": failed_message,
+            },
+        )
+
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail=str(exc),
+        ) from exc
+
+    async with connection() as conn:
+        async with conn.cursor() as cur:
+            sent_message = await mark_human_message_sent(
+                cur=cur,
+                clinic_id=current_clinic,
+                message_id=prepared_message["id"],
+                external_id=provider_result["external_id"],
+                provider_response=provider_result["response"],
+            )
+
+            await cur.execute(
+                """
+                UPDATE communication_events
+                SET
+                    external_id = %s,
+                    payload = jsonb_set(
+                        payload,
+                        '{status}',
+                        '"sent"'::jsonb,
+                        TRUE
+                    )
+                WHERE id = %s
+                  AND clinic_id = %s
+                """,
+                (
+                    provider_result["external_id"],
+                    payload.draft_id,
+                    current_clinic,
+                ),
+            )
+
+            await record_copilot_audit_event(
+                cur=cur,
+                clinic_id=current_clinic,
+                patient_id=payload.patient_id,
+                actor_user_id=user_id,
+                action_type="appointment_message_sent",
+                result="success",
+                entity_type="communication_event",
+                entity_id=payload.draft_id,
+                after_data={
+                    "status": "sent",
+                    "message_kind": payload.message_kind,
+                },
+                metadata={
+                    "actor_label": (
+                        user.get("full_name")
+                        or user.get("email")
+                        or "Utilisateur"
+                    ),
+                    "source": (
+                        "copilot_appointment_message"
+                    ),
+                    "draft_id": str(payload.draft_id),
+                    "appointment_id": str(
+                        payload.appointment_id
+                    ),
+                    "message_kind": (
+                        payload.message_kind
+                    ),
+                    "thread_id": str(thread_id),
+                },
+            )
+
+            task_key = (
+                f"confirmation:{payload.appointment_id}"
+                if payload.message_kind
+                == "pending_confirmation"
+                else f"no_show:{payload.appointment_id}"
+            )
+
+            await upsert_task_state(
+                cur=cur,
+                clinic_id=current_clinic,
+                task_key=task_key,
+                status="completed",
+                snoozed_until=None,
+                assigned_user_id=None,
+            )
+
+        await conn.commit()
+
+    await publish_conversation_event(
+        clinic_id=current_clinic,
+        event_type="conversation.message.sent",
+        data={
+            "thread_id": str(thread_id),
+            "message": sent_message,
+        },
+    )
+
+    return {
+        "status": "sent",
+        "draft_id": payload.draft_id,
+        "thread_id": thread_id,
+        "message": sent_message,
+    }
+
+
+@router.post(
     "/recall/drafts",
     response_model=RecallDraftResponse,
     status_code=201,
@@ -344,14 +790,26 @@ async def send_recall_proposal(
     if not isinstance(user_id, UUID):
         user_id = UUID(str(user_id))
 
-    if payload.practitioner_id is None:
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT,
-            detail=(
-                "Le créneau n'a pas de praticien attribué. "
-                "Attribuez un praticien avant l'envoi."
-            ),
-        )
+    is_slot_recall = payload.appointment_id is not None
+
+    if is_slot_recall:
+        if payload.practitioner_id is None:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail=(
+                    "Le créneau n'a pas de praticien attribué. "
+                    "Attribuez un praticien avant l'envoi."
+                ),
+            )
+
+        if payload.start_at is None or payload.end_at is None:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail=(
+                    "Le créneau de rappel doit avoir une date "
+                    "de début et une date de fin."
+                ),
+            )
 
     # --------------------------------------------------------
     # Retrouver la conversation WhatsApp du patient
@@ -383,17 +841,6 @@ async def send_recall_proposal(
 
             thread_row = await cur.fetchone()
 
-            if thread_row is None:
-                raise HTTPException(
-                    status_code=status.HTTP_409_CONFLICT,
-                    detail=(
-                        "Aucune conversation WhatsApp ouverte "
-                        "n'est disponible pour ce patient."
-                    ),
-                )
-
-            thread_id = thread_row["id"]
-
             await cur.execute(
                 """
                 SELECT id
@@ -401,7 +848,7 @@ async def send_recall_proposal(
                 WHERE id = %s
                   AND clinic_id = %s
                   AND patient_id = %s
-                  AND appointment_id = %s
+                  AND appointment_id IS NOT DISTINCT FROM %s
                   AND channel = 'whatsapp'
                   AND direction = 'outbound'
                   AND event_type = 'recall_draft'
@@ -425,6 +872,99 @@ async def send_recall_proposal(
                     ),
                 )
 
+            if thread_row is None:
+                if is_slot_recall:
+                    raise HTTPException(
+                        status_code=status.HTTP_409_CONFLICT,
+                        detail=(
+                            "Aucune conversation WhatsApp ouverte "
+                            "n'est disponible pour ce patient."
+                        ),
+                    )
+
+                await cur.execute(
+                    """
+                    SELECT phone
+                    FROM patients
+                    WHERE id = %s
+                      AND clinic_id = %s
+                    LIMIT 1
+                    """,
+                    (
+                        payload.patient_id,
+                        current_clinic,
+                    ),
+                )
+
+                patient_row = await cur.fetchone()
+
+                patient_phone = (
+                    str(patient_row.get("phone") or "").strip()
+                    if patient_row
+                    else ""
+                )
+
+                if not patient_phone:
+                    raise HTTPException(
+                        status_code=status.HTTP_409_CONFLICT,
+                        detail=(
+                            "Aucun numéro WhatsApp n'est "
+                            "disponible pour ce patient."
+                        ),
+                    )
+
+                await cur.execute(
+                    """
+                    SELECT provider_instance
+                    FROM clinic_integrations
+                    WHERE clinic_id = %s
+                      AND LOWER(BTRIM(provider)) = 'evolution'
+                      AND active = TRUE
+                    ORDER BY
+                        updated_at DESC,
+                        created_at DESC
+                    LIMIT 1
+                    """,
+                    (current_clinic,),
+                )
+
+                integration_row = await cur.fetchone()
+
+                provider_instance = (
+                    str(
+                        integration_row.get(
+                            "provider_instance"
+                        )
+                        or ""
+                    ).strip()
+                    if integration_row
+                    else ""
+                )
+
+                if not provider_instance:
+                    raise HTTPException(
+                        status_code=status.HTTP_409_CONFLICT,
+                        detail=(
+                            "Aucune intégration Evolution active "
+                            "n'est configurée pour cette clinique."
+                        ),
+                    )
+
+                thread_row = (
+                    await get_or_create_conversation_thread(
+                        cur=cur,
+                        clinic_id=current_clinic,
+                        patient_id=payload.patient_id,
+                        channel="whatsapp",
+                        sender_phone=patient_phone,
+                        provider="evolution",
+                        provider_instance=provider_instance,
+                        external_thread_id=None,
+                    )
+                )
+
+            thread_id = thread_row["id"]
+
             thread, prepared_message = await prepare_human_message(
                 cur=cur,
                 clinic_id=current_clinic,
@@ -441,32 +981,43 @@ async def send_recall_proposal(
     # Ainsi une réponse très rapide OUI/NON est comprise.
     # --------------------------------------------------------
 
-    confirmation_context = {
-        "intent": "book_appointment",
-        "active_workflow": "book_appointment",
-        "source": "copilot_recall",
-        "recall_draft_id": str(payload.draft_id),
-        "released_appointment_id": str(payload.appointment_id),
-        "practitioner_id": str(payload.practitioner_id),
-        "treatment_id": (
-            str(payload.treatment_id)
-            if payload.treatment_id
-            else None
-        ),
-        "start_at": payload.start_at.isoformat(),
-        "end_at": payload.end_at.isoformat(),
-        "requested_date_text": payload.start_at.strftime("%d/%m/%Y"),
-        "requested_time_text": payload.start_at.strftime("%H:%M"),
-        "confirmed": False,
-    }
+    confirmation_context = None
 
-    await save_conversation_state(
-        clinic_id=current_clinic,
-        patient_id=payload.patient_id,
-        channel="whatsapp",
-        state="waiting_for_confirmation",
-        context=confirmation_context,
-    )
+    if is_slot_recall:
+        confirmation_context = {
+            "intent": "book_appointment",
+            "active_workflow": "book_appointment",
+            "source": "copilot_recall",
+            "recall_draft_id": str(payload.draft_id),
+            "released_appointment_id": str(
+                payload.appointment_id
+            ),
+            "practitioner_id": str(
+                payload.practitioner_id
+            ),
+            "treatment_id": (
+                str(payload.treatment_id)
+                if payload.treatment_id
+                else None
+            ),
+            "start_at": payload.start_at.isoformat(),
+            "end_at": payload.end_at.isoformat(),
+            "requested_date_text": (
+                payload.start_at.strftime("%d/%m/%Y")
+            ),
+            "requested_time_text": (
+                payload.start_at.strftime("%H:%M")
+            ),
+            "confirmed": False,
+        }
+
+        await save_conversation_state(
+            clinic_id=current_clinic,
+            patient_id=payload.patient_id,
+            channel="whatsapp",
+            state="waiting_for_confirmation",
+            context=confirmation_context,
+        )
 
     # --------------------------------------------------------
     # Envoi Evolution WhatsApp
@@ -516,8 +1067,16 @@ async def send_recall_proposal(
                     actor_user_id=user_id,
                     action_type="recall_proposal_send",
                     result="failed",
-                    entity_type="appointment",
-                    entity_id=payload.appointment_id,
+                    entity_type=(
+                        "appointment"
+                        if is_slot_recall
+                        else "communication_event"
+                    ),
+                    entity_id=(
+                        payload.appointment_id
+                        if is_slot_recall
+                        else payload.draft_id
+                    ),
                     metadata={
                         "actor_label": (
                             user.get("full_name")
@@ -532,16 +1091,17 @@ async def send_recall_proposal(
 
             await conn.commit()
 
-        await save_conversation_state(
-            clinic_id=current_clinic,
-            patient_id=payload.patient_id,
-            channel="whatsapp",
-            state="completed",
-            context={
-                **confirmation_context,
-                "send_failed": True,
-            },
-        )
+        if confirmation_context is not None:
+            await save_conversation_state(
+                clinic_id=current_clinic,
+                patient_id=payload.patient_id,
+                channel="whatsapp",
+                state="completed",
+                context={
+                    **confirmation_context,
+                    "send_failed": True,
+                },
+            )
 
         await publish_conversation_event(
             clinic_id=current_clinic,
@@ -599,13 +1159,27 @@ async def send_recall_proposal(
                 actor_user_id=user_id,
                 action_type="recall_proposal_sent",
                 result="success",
-                entity_type="appointment",
-                entity_id=payload.appointment_id,
-                after_data={
-                    "status": "waiting_for_confirmation",
-                    "start_at": payload.start_at,
-                    "end_at": payload.end_at,
-                },
+                entity_type=(
+                    "appointment"
+                    if is_slot_recall
+                    else "communication_event"
+                ),
+                entity_id=(
+                    payload.appointment_id
+                    if is_slot_recall
+                    else payload.draft_id
+                ),
+                after_data=(
+                    {
+                        "status": "waiting_for_confirmation",
+                        "start_at": payload.start_at,
+                        "end_at": payload.end_at,
+                    }
+                    if is_slot_recall
+                    else {
+                        "status": "sent",
+                    }
+                ),
                 metadata={
                     "actor_label": (
                         user.get("full_name")
@@ -633,7 +1207,7 @@ async def send_recall_proposal(
         "status": "sent",
         "draft_id": payload.draft_id,
         "thread_id": thread_id,
-        "waiting_for_confirmation": True,
+        "waiting_for_confirmation": is_slot_recall,
         "message": sent_message,
     }
 

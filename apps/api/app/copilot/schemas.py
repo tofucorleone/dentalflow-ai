@@ -99,6 +99,46 @@ class CopilotUserContext(BaseModel):
 
 
 
+class AppointmentMessageDraftCreateRequest(BaseModel):
+    patient_id: UUID
+    appointment_id: UUID
+    message_kind: Literal[
+        "pending_confirmation",
+        "no_show",
+    ]
+    message: str = Field(
+        min_length=1,
+        max_length=4000,
+    )
+
+
+class AppointmentMessageDraftResponse(BaseModel):
+    id: UUID
+    clinic_id: UUID
+    patient_id: UUID
+    appointment_id: UUID
+    channel: Literal["whatsapp"]
+    direction: Literal["outbound"]
+    event_type: Literal["appointment_message_draft"]
+    external_id: str | None
+    payload: dict
+    created_at: datetime
+
+
+class AppointmentMessageSendRequest(BaseModel):
+    draft_id: UUID
+    patient_id: UUID
+    appointment_id: UUID
+    message_kind: Literal[
+        "pending_confirmation",
+        "no_show",
+    ]
+    message: str = Field(
+        min_length=1,
+        max_length=4000,
+    )
+
+
 class RecallDraftCreateRequest(BaseModel):
     patient_id: UUID
     appointment_id: UUID | None = None
@@ -136,11 +176,11 @@ class RecallDraftResponse(BaseModel):
 class RecallSendRequest(BaseModel):
     draft_id: UUID
     patient_id: UUID
-    appointment_id: UUID
+    appointment_id: UUID | None = None
     practitioner_id: UUID | None = None
     treatment_id: UUID | None = None
-    start_at: datetime
-    end_at: datetime
+    start_at: datetime | None = None
+    end_at: datetime | None = None
     message: str = Field(
         min_length=1,
         max_length=4000,

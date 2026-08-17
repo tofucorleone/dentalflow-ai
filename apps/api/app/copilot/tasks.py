@@ -24,8 +24,12 @@ def _extract_entity_ids(
         recommendation.get("id") or ""
     )
 
-    patient_id: UUID | None = None
-    appointment_id: UUID | None = None
+    patient_id = _optional_uuid(
+        recommendation.get("patient_id")
+    )
+    appointment_id = _optional_uuid(
+        recommendation.get("appointment_id")
+    )
 
     if recommendation_id.startswith("recall:"):
         patient_id = _optional_uuid(
@@ -40,6 +44,24 @@ def _extract_entity_ids(
         appointment_id = _optional_uuid(
             recommendation_id.removeprefix(
                 "released_slot:"
+            )
+        )
+
+    elif recommendation_id.startswith(
+        "confirmation:"
+    ):
+        appointment_id = _optional_uuid(
+            recommendation_id.removeprefix(
+                "confirmation:"
+            )
+        )
+
+    elif recommendation_id.startswith(
+        "no_show:"
+    ):
+        appointment_id = _optional_uuid(
+            recommendation_id.removeprefix(
+                "no_show:"
             )
         )
 
@@ -299,6 +321,104 @@ async def upsert_task_state(
     )
 
     return await cur.fetchone()
+
+
+async def hydrate_prepared_appointment_message_drafts(
+    *,
+    cur,
+    clinic_id,
+    tasks: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    prepared_tasks = [
+        task
+        for task in tasks
+        if (
+            task.get("type")
+            in {"pending_confirmation", "no_show"}
+            and task.get("status") == "prepared"
+            and task.get("patient_id") is not None
+            and task.get("appointment_id") is not None
+        )
+    ]
+
+    if not prepared_tasks:
+        return tasks
+
+    appointment_ids = list(
+        {
+            task["appointment_id"]
+            for task in prepared_tasks
+        }
+    )
+
+    await cur.execute(
+        """
+        SELECT DISTINCT ON (
+            appointment_id,
+            payload->>'message_kind'
+        )
+            id,
+            patient_id,
+            appointment_id,
+            payload->>'message_kind' AS message_kind,
+            payload->>'message' AS message
+        FROM communication_events
+        WHERE clinic_id = %s
+          AND appointment_id = ANY(%s)
+          AND event_type = 'appointment_message_draft'
+          AND channel = 'whatsapp'
+          AND direction = 'outbound'
+          AND payload->>'status' = 'draft'
+        ORDER BY
+            appointment_id,
+            payload->>'message_kind',
+            created_at DESC,
+            id DESC
+        """,
+        (
+            clinic_id,
+            appointment_ids,
+        ),
+    )
+
+    rows = await cur.fetchall()
+
+    drafts = {
+        (
+            row["appointment_id"],
+            row["message_kind"],
+        ): {
+            "id": row["id"],
+            "message": row["message"],
+        }
+        for row in rows
+        if row.get("message")
+    }
+
+    hydrated: list[dict[str, Any]] = []
+
+    for task in tasks:
+        item = dict(task)
+
+        if (
+            item.get("type")
+            in {"pending_confirmation", "no_show"}
+            and item.get("status") == "prepared"
+        ):
+            draft = drafts.get(
+                (
+                    item.get("appointment_id"),
+                    item.get("type"),
+                )
+            )
+
+            if draft:
+                item["draft_id"] = draft["id"]
+                item["draft_message"] = draft["message"]
+
+        hydrated.append(item)
+
+    return hydrated
 
 
 async def hydrate_prepared_recall_drafts(

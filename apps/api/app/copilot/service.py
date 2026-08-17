@@ -766,6 +766,131 @@ async def answer_copilot_chat(
     )
 
 
+async def create_appointment_message_draft(
+    *,
+    cur,
+    clinic_id,
+    patient_id,
+    appointment_id,
+    message_kind: str,
+    message: str,
+    created_by_user_id,
+) -> dict:
+    cleaned_message = message.strip()
+
+    if not cleaned_message:
+        raise ValueError(
+            "Le brouillon ne peut pas être vide."
+        )
+
+    allowed_message_kinds = {
+        "pending_confirmation",
+        "no_show",
+    }
+
+    if message_kind not in allowed_message_kinds:
+        raise ValueError(
+            "Type de message de rendez-vous invalide."
+        )
+
+    await cur.execute(
+        """
+        SELECT
+            id,
+            clinic_id,
+            patient_id,
+            appointment_id,
+            channel,
+            direction,
+            event_type,
+            external_id,
+            payload,
+            created_at
+        FROM communication_events
+        WHERE clinic_id = %s
+          AND patient_id = %s
+          AND appointment_id = %s
+          AND channel = 'whatsapp'
+          AND direction = 'outbound'
+          AND event_type = 'appointment_message_draft'
+          AND payload->>'message_kind' = %s
+          AND payload->>'status' = 'draft'
+        ORDER BY created_at DESC
+        LIMIT 1
+        """,
+        (
+            clinic_id,
+            patient_id,
+            appointment_id,
+            message_kind,
+        ),
+    )
+
+    existing_draft = await cur.fetchone()
+
+    if existing_draft is not None:
+        return existing_draft
+
+    payload = {
+        "status": "draft",
+        "message_kind": message_kind,
+        "message": cleaned_message,
+        "requires_validation": True,
+        "created_by_user_id": str(created_by_user_id),
+    }
+
+    await cur.execute(
+        """
+        INSERT INTO communication_events (
+            clinic_id,
+            patient_id,
+            appointment_id,
+            channel,
+            direction,
+            event_type,
+            external_id,
+            payload
+        )
+        VALUES (
+            %s,
+            %s,
+            %s,
+            'whatsapp',
+            'outbound',
+            'appointment_message_draft',
+            NULL,
+            %s
+        )
+        RETURNING
+            id,
+            clinic_id,
+            patient_id,
+            appointment_id,
+            channel,
+            direction,
+            event_type,
+            external_id,
+            payload,
+            created_at
+        """,
+        (
+            clinic_id,
+            patient_id,
+            appointment_id,
+            Jsonb(payload),
+        ),
+    )
+
+    row = await cur.fetchone()
+
+    if row is None:
+        raise RuntimeError(
+            "Le brouillon de message n’a pas pu être créé."
+        )
+
+    return row
+
+
 async def create_recall_draft(
     *,
     cur,

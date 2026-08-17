@@ -136,6 +136,9 @@ export type CopilotTask = {
   recommended_action: string;
   patient_id: string | null;
   appointment_id: string | null;
+  draft_id: string | null;
+  draft_message: string | null;
+  reasons: string[];
   status:
     | "open"
     | "prepared"
