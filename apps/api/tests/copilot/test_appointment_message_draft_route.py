@@ -319,10 +319,35 @@ def test_appointment_message_send_happy_path(
         "pending_confirmation",
     )
 
-    assert len(second_cursor.executed) == 2
+    assert len(second_cursor.executed) == 3
+
+    update_query, update_params = (
+        second_cursor.executed[0]
+    )
+
+    reminder_query, reminder_params = (
+        second_cursor.executed[1]
+    )
+
+    assert (
+        "INSERT INTO appointment_confirmation_reminders"
+        in reminder_query
+    )
+    assert "ON CONFLICT (appointment_id)" in reminder_query
+    assert "DO UPDATE SET" in reminder_query
+    assert "'sent'" in reminder_query
+
+    assert reminder_params == (
+        clinic_id,
+        "clinic-test",
+        "provider-message-456",
+        appointment_id,
+        clinic_id,
+        patient_id,
+    )
 
     task_state_query, task_state_params = (
-        second_cursor.executed[1]
+        second_cursor.executed[2]
     )
 
     assert "copilot_task_states" in task_state_query
@@ -333,10 +358,6 @@ def test_appointment_message_send_happy_path(
         "completed",
         None,
         None,
-    )
-
-    update_query, update_params = (
-        second_cursor.executed[0]
     )
 
     assert "UPDATE communication_events" in update_query
@@ -626,9 +647,10 @@ def test_appointment_message_send_marks_task_completed(
             self.fetchone_results = list(
                 fetchone_results or []
             )
+            self.executed = []
 
         async def execute(self, query, params):
-            pass
+            self.executed.append((query, params))
 
         async def fetchone(self):
             if not self.fetchone_results:
@@ -766,6 +788,39 @@ def test_appointment_message_send_marks_task_completed(
     )
 
     assert result["status"] == "sent"
+
+    reminder_updates = [
+        (query, params)
+        for query, params in second_cursor.executed
+        if "appointment_confirmation_reminders"
+        in str(query)
+    ]
+
+    assert len(reminder_updates) == 1
+
+    reminder_query, reminder_params = (
+        reminder_updates[0]
+    )
+
+    assert (
+        "INSERT INTO appointment_confirmation_reminders"
+        in str(reminder_query)
+    )
+    assert (
+        "ON CONFLICT (appointment_id)"
+        in str(reminder_query)
+    )
+    assert "DO UPDATE SET" in str(reminder_query)
+    assert "'sent'" in str(reminder_query)
+
+    assert reminder_params == (
+        clinic_id,
+        "clinic-test",
+        "provider-message-789",
+        appointment_id,
+        clinic_id,
+        patient_id,
+    )
 
     task_state_mock.assert_awaited_once_with(
         cur=second_cursor,

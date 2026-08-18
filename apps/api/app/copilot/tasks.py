@@ -137,7 +137,15 @@ def build_task_from_recommendation(
             recommendation.get("reasons")
             or []
         ),
-        "status": "open",
+        "status": str(
+            recommendation.get("status")
+            or "open"
+        ),
+        "confirmation_status": (
+            recommendation.get(
+                "confirmation_status"
+            )
+        ),
         "requires_validation": bool(
             recommendation.get(
                 "requires_validation",

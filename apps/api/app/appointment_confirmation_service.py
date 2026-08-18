@@ -539,24 +539,77 @@ async def dispatch_due_appointment_confirmation_reminders(
 
 
 def _normalize_confirmation_reply(value: str) -> str:
-    return " ".join(
-        value.strip().lower().split()
-    )
+    normalized = value.strip().lower()
+
+    replacements = {
+        "’": "'",
+        "‘": "'",
+        "`": "'",
+    }
+
+    for source, target in replacements.items():
+        normalized = normalized.replace(source, target)
+
+    return " ".join(normalized.split())
 
 
 def _is_positive_confirmation_reply(value: str) -> bool:
     normalized = _normalize_confirmation_reply(value)
 
-    return normalized in {
+    exact_positive = {
         "oui",
         "yes",
         "confirme",
         "confirmé",
         "je confirme",
         "ok",
+        "okay",
+        "oky",
+        "oki",
         "d'accord",
         "daccord",
+        "c'est bon",
+        "cest bon",
+        "oui merci",
+        "oui je confirme",
+        "oui d'accord",
+        "oui daccord",
+        "ok d'accord",
+        "ok daccord",
     }
+
+    if normalized in exact_positive:
+        return True
+
+    tokens = normalized.replace("'", "").split()
+
+    if len(tokens) != 2:
+        return False
+
+    first, second = tokens
+
+    if first not in {"oui", "ok", "okay"}:
+        return False
+
+    if len(second) > 8:
+        return False
+
+    # Tolérance très limitée aux fautes proches de "daccord".
+    target = "daccord"
+
+    if abs(len(second) - len(target)) > 1:
+        return False
+
+    mismatches = sum(
+        left != right
+        for left, right in zip(second, target)
+    )
+
+    mismatches += abs(
+        len(second) - len(target)
+    )
+
+    return mismatches <= 2
 
 
 async def handle_appointment_confirmation_reply(

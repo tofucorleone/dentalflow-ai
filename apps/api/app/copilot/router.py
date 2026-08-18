@@ -633,6 +633,68 @@ async def send_appointment_message_draft_endpoint(
                 },
             )
 
+            if payload.message_kind == "pending_confirmation":
+                await cur.execute(
+                    """
+                    INSERT INTO appointment_confirmation_reminders (
+                        clinic_id,
+                        appointment_id,
+                        patient_id,
+                        provider,
+                        provider_instance,
+                        patient_phone,
+                        status,
+                        scheduled_for,
+                        sent_at,
+                        external_message_id
+                    )
+                    SELECT
+                        %s,
+                        a.id,
+                        a.patient_id,
+                        'evolution',
+                        %s,
+                        p.phone,
+                        'sent',
+                        NOW(),
+                        NOW(),
+                        %s
+                    FROM appointments AS a
+                    JOIN patients AS p
+                      ON p.id = a.patient_id
+                     AND p.clinic_id = a.clinic_id
+                    WHERE a.id = %s
+                      AND a.clinic_id = %s
+                      AND a.patient_id = %s
+                    ON CONFLICT (appointment_id)
+                    DO UPDATE SET
+                        status = CASE
+                            WHEN appointment_confirmation_reminders.status
+                                 = 'confirmed'
+                            THEN 'confirmed'
+                            ELSE 'sent'
+                        END,
+                        sent_at = COALESCE(
+                            appointment_confirmation_reminders.sent_at,
+                            NOW()
+                        ),
+                        external_message_id = COALESCE(
+                            appointment_confirmation_reminders.external_message_id,
+                            EXCLUDED.external_message_id
+                        ),
+                        error_message = NULL,
+                        updated_at = NOW()
+                    """,
+                    (
+                        current_clinic,
+                        thread["provider_instance"],
+                        provider_result["external_id"],
+                        payload.appointment_id,
+                        current_clinic,
+                        payload.patient_id,
+                    ),
+                )
+
             task_key = (
                 f"confirmation:{payload.appointment_id}"
                 if payload.message_kind

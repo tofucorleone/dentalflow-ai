@@ -27,6 +27,7 @@ def build_appointment_message_actions(
     appointments: list[dict],
     now: datetime,
     sent_confirmation_appointment_ids: set | None = None,
+    confirmation_status_by_appointment: dict | None = None,
 ) -> list[dict]:
     """
     Construit les tâches individuelles de communication patient :
@@ -39,6 +40,9 @@ def build_appointment_message_actions(
     actions: list[dict] = []
     sent_confirmation_ids = (
         sent_confirmation_appointment_ids or set()
+    )
+    confirmation_statuses = (
+        confirmation_status_by_appointment or {}
     )
 
     for appointment in appointments:
@@ -58,12 +62,28 @@ def build_appointment_message_actions(
         ):
             continue
 
+        confirmation_status = (
+            confirmation_statuses.get(
+                appointment_id
+            )
+        )
+
         if (
-            appointment_status == "pending"
-            and appointment_id not in sent_confirmation_ids
-            and start_at.date()
+            start_at.date()
             == (now + timedelta(days=1)).date()
+            and (
+                appointment_status == "pending"
+                or (
+                    appointment_status == "confirmed"
+                    and confirmation_status
+                    == "confirmed"
+                )
+            )
         ):
+            confirmation_already_sent = (
+                appointment_id in sent_confirmation_ids
+            )
+
             draft_message = (
                 f"Bonjour {patient_name}, "
                 "nous vous rappelons votre rendez-vous demain. "
@@ -103,7 +123,17 @@ def build_appointment_message_actions(
                             "href": "/appointments",
                         }
                     ],
-                    "requires_validation": True,
+                    "requires_validation": (
+                        not confirmation_already_sent
+                    ),
+                    "status": (
+                        "completed"
+                        if confirmation_already_sent
+                        else "open"
+                    ),
+                    "confirmation_status": (
+                        confirmation_status
+                    ),
                 }
             )
 
@@ -648,6 +678,18 @@ async def build_copilot_tasks(
                   AND a.start_at < %s
               )
               OR a.status = 'no_show'
+                OR (
+                    a.status = 'confirmed'
+                    AND a.start_at >= %s
+                    AND a.start_at < %s
+                    AND EXISTS (
+                        SELECT 1
+                        FROM appointment_confirmation_reminders acr
+                        WHERE acr.clinic_id = a.clinic_id
+                          AND acr.appointment_id = a.id
+                          AND acr.status = 'confirmed'
+                    )
+                )
           )
         ORDER BY
             CASE
@@ -661,6 +703,8 @@ async def build_copilot_tasks(
             clinic_id,
             tomorrow_start,
             day_after_tomorrow,
+            tomorrow_start,
+            day_after_tomorrow,
         ),
     )
 
@@ -668,7 +712,9 @@ async def build_copilot_tasks(
 
     await cur.execute(
         """
-        SELECT appointment_id
+        SELECT
+            appointment_id,
+            status
         FROM appointment_confirmation_reminders
         WHERE clinic_id = %s
           AND status IN ('sent', 'confirmed')
@@ -683,11 +729,19 @@ async def build_copilot_tasks(
         for row in sent_confirmation_rows
     }
 
+    confirmation_status_by_appointment = {
+        row["appointment_id"]: row["status"]
+        for row in sent_confirmation_rows
+    }
+
     actions = build_appointment_message_actions(
         appointments=appointments,
         now=local_now,
         sent_confirmation_appointment_ids=(
             sent_confirmation_appointment_ids
+        ),
+        confirmation_status_by_appointment=(
+            confirmation_status_by_appointment
         ),
     )
 

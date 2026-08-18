@@ -35,6 +35,15 @@ def test_evolution_oui_confirmation_short_circuits_normal_conversation(
         "created": True,
     }
 
+    outbound_message = {
+        "id": UUID(
+            "66666666-6666-6666-6666-666666666666"
+        ),
+        "patient_id": PATIENT_ID,
+        "status": "prepared",
+        "created": True,
+    }
+
     confirmation_result = {
         "reminder": {
             "id": REMINDER_ID,
@@ -46,8 +55,18 @@ def test_evolution_oui_confirmation_short_circuits_normal_conversation(
     }
 
     get_thread_mock = AsyncMock(return_value=thread)
-    create_message_mock = AsyncMock(return_value=inbound_message)
-    update_thread_mock = AsyncMock(return_value=updated_thread)
+    create_message_mock = AsyncMock(
+        side_effect=[
+            inbound_message,
+            outbound_message,
+        ]
+    )
+    update_thread_mock = AsyncMock(
+        side_effect=[
+            updated_thread,
+            updated_thread,
+        ]
+    )
     confirmation_mock = AsyncMock(return_value=confirmation_result)
 
     control_mock = AsyncMock()
@@ -118,19 +137,72 @@ def test_evolution_oui_confirmation_short_circuits_normal_conversation(
     )
 
     assert result.handled is True
-    assert result.reply is None
+    assert (
+        result.reply
+        == "Merci, votre rendez-vous est bien confirmé."
+    )
+    assert result.intent is None
     assert result.requires_human is False
     assert result.metadata["appointment_confirmation"] is True
     assert result.metadata["appointment_id"] == str(APPOINTMENT_ID)
     assert result.metadata["reminder_id"] == str(REMINDER_ID)
     assert result.metadata["thread_id"] == THREAD_ID
     assert result.metadata["inbound_message_id"] == MESSAGE_ID
+    assert (
+        result.metadata["outbound_message_id"]
+        == outbound_message["id"]
+    )
+    assert (
+        result.metadata["outbound_message_status"]
+        == "prepared"
+    )
     assert result.metadata["unread_count"] == 1
 
     confirmation_mock.assert_awaited_once_with(
         clinic_id=CLINIC_ID,
         patient_phone="+213542910065",
         reply_text="OUI",
+    )
+
+    assert create_message_mock.await_count == 2
+
+    outbound_call = create_message_mock.await_args_list[1]
+
+    assert outbound_call.kwargs["clinic_id"] == CLINIC_ID
+    assert outbound_call.kwargs["thread_id"] == THREAD_ID
+    assert outbound_call.kwargs["patient_id"] == PATIENT_ID
+    assert outbound_call.kwargs["channel"] == "whatsapp"
+    assert outbound_call.kwargs["direction"] == "outbound"
+    assert outbound_call.kwargs["author_type"] == "ai"
+    assert outbound_call.kwargs["message_type"] == "text"
+    assert (
+        outbound_call.kwargs["body"]
+        == "Merci, votre rendez-vous est bien confirmé."
+    )
+    assert outbound_call.kwargs["provider"] == "evolution"
+    assert outbound_call.kwargs["status"] == "prepared"
+    assert (
+        outbound_call.kwargs["requires_validation"]
+        is False
+    )
+
+    assert update_thread_mock.await_count == 2
+
+    outbound_thread_call = (
+        update_thread_mock.await_args_list[1]
+    )
+
+    assert (
+        outbound_thread_call.kwargs["thread_id"]
+        == THREAD_ID
+    )
+    assert (
+        outbound_thread_call.kwargs["direction"]
+        == "outbound"
+    )
+    assert (
+        outbound_thread_call.kwargs["patient_id"]
+        == PATIENT_ID
     )
 
     control_mock.assert_not_awaited()

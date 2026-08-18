@@ -184,6 +184,47 @@ class FakeConnectionPositiveConfirmation:
         return self.cursor_instance
 
 
+def test_positive_confirmation_helper_accepts_natural_variants():
+    from app.appointment_confirmation_service import (
+        _is_positive_confirmation_reply,
+    )
+
+    accepted = [
+        "Oui",
+        "OUI",
+        "Oui merci",
+        "Oui d'accord",
+        "Oui daccord",
+        "Oui dqccord",
+        "OK",
+        "Oky",
+        "Oki",
+        "OK daccord",
+        "Je confirme",
+    ]
+
+    for value in accepted:
+        assert _is_positive_confirmation_reply(value) is True
+
+
+def test_positive_confirmation_helper_rejects_ambiguous_messages():
+    from app.appointment_confirmation_service import (
+        _is_positive_confirmation_reply,
+    )
+
+    rejected = [
+        "oui mais non",
+        "oui peut être",
+        "oui pour annuler",
+        "ok je veux déplacer",
+        "d'accord pour annuler",
+        "bonjour oui",
+    ]
+
+    for value in rejected:
+        assert _is_positive_confirmation_reply(value) is False
+
+
 def test_positive_reply_confirms_appointment_and_reminder(
     monkeypatch,
 ):

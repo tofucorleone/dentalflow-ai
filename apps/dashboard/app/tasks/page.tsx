@@ -37,6 +37,10 @@ type CopilotTask = {
   assigned_user_id: string | null;
   snoozed_until: string | null;
   completed_at: string | null;
+  confirmation_status:
+    | "sent"
+    | "confirmed"
+    | null;
   requires_validation: boolean;
   actions: Array<{
     type: string;
@@ -63,6 +67,24 @@ function priorityLabel(priority: CopilotTask["priority"]) {
   if (priority === "high") return "Urgent";
   if (priority === "medium") return "Haute";
   return "Normale";
+}
+
+function confirmationStatusLabel(
+  task: CopilotTask,
+): string | null {
+  if (task.type !== "pending_confirmation") {
+    return null;
+  }
+
+  if (task.confirmation_status === "confirmed") {
+    return "Rendez-vous confirmé par le patient";
+  }
+
+  if (task.confirmation_status === "sent") {
+    return "Message envoyé — en attente de confirmation";
+  }
+
+  return null;
 }
 
 export default async function TasksPage() {
@@ -158,6 +180,12 @@ export default async function TasksPage() {
                     <span>Score {task.score}</span>
                     <span>Créé par le Copilote</span>
 
+                    {confirmationStatusLabel(task) ? (
+                      <span>
+                        {confirmationStatusLabel(task)}
+                      </span>
+                    ) : null}
+
                     {task.assigned_user_id ? (
                       <span>Attribuée</span>
                     ) : null}
@@ -204,6 +232,68 @@ export default async function TasksPage() {
           })}
         </section>
       )}
+
+      {completedTasks.length > 0 ? (
+        <section className="tasks-list">
+          {completedTasks.map((task) => {
+            const navigationAction = task.actions.find(
+              (action) =>
+                action.type === "navigate" &&
+                action.href,
+            );
+
+            return (
+              <article
+                className={`tasks-item priority-${task.priority}`}
+                key={task.id}
+              >
+                <div className="tasks-item-priority">
+                  <CheckCircle2 size={18} />
+                  <span>Terminée</span>
+                </div>
+
+                <div className="tasks-item-content">
+                  <h2>{task.title}</h2>
+
+                  {task.description ? (
+                    <p>{task.description}</p>
+                  ) : null}
+
+                  <div className="tasks-item-meta">
+                    {confirmationStatusLabel(task) ? (
+                      <span>
+                        {confirmationStatusLabel(task)}
+                      </span>
+                    ) : (
+                      <span>Tâche terminée</span>
+                    )}
+
+                    {task.completed_at ? (
+                      <span>
+                        Terminée le{" "}
+                        {new Date(
+                          task.completed_at,
+                        ).toLocaleString("fr-FR")}
+                      </span>
+                    ) : null}
+                  </div>
+                </div>
+
+                <div className="tasks-item-actions">
+                  {navigationAction?.href ? (
+                    <Link
+                      className="tasks-item-action"
+                      href={navigationAction.href}
+                    >
+                      {navigationAction.label}
+                    </Link>
+                  ) : null}
+                </div>
+              </article>
+            );
+          })}
+        </section>
+      ) : null}
     </div>
   );
 }

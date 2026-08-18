@@ -139,13 +139,51 @@ async def process_controlled_conversation(
                 "appointment"
             ]
 
+            confirmation_reply = (
+                "Merci, votre rendez-vous est bien confirmé."
+            )
+
+            confirmed_patient_id = confirmed_reminder.get(
+                "patient_id"
+            )
+
+            outbound_message = await create_conversation_message(
+                cur=cur,
+                clinic_id=conversation.clinic_id,
+                thread_id=thread["id"],
+                patient_id=confirmed_patient_id,
+                channel=conversation.channel,
+                direction="outbound",
+                author_type="ai",
+                message_type="text",
+                body=confirmation_reply,
+                provider=provider,
+                status="prepared",
+                requires_validation=False,
+                metadata={
+                    "intent": "appointment_confirmation",
+                    "source": "appointment_confirmation",
+                    "appointment_id": str(
+                        confirmed_appointment["id"]
+                    ),
+                    "reminder_id": str(
+                        confirmed_reminder["id"]
+                    ),
+                },
+            )
+
+            thread = await update_conversation_thread_after_message(
+                cur=cur,
+                thread_id=thread["id"],
+                direction="outbound",
+                patient_id=confirmed_patient_id,
+            )
+
             return ControlledConversationResponse(
                 handled=True,
                 mode="ai_active",
-                reply=None,
-                patient_id=confirmed_reminder.get(
-                    "patient_id"
-                ),
+                reply=confirmation_reply,
+                patient_id=confirmed_patient_id,
                 requires_human=False,
                 actions=[],
                 metadata={
@@ -159,6 +197,12 @@ async def process_controlled_conversation(
                     "thread_id": thread["id"],
                     "inbound_message_id": inbound_message[
                         "id"
+                    ],
+                    "outbound_message_id": outbound_message[
+                        "id"
+                    ],
+                    "outbound_message_status": outbound_message[
+                        "status"
                     ],
                     "unread_count": thread[
                         "unread_count"

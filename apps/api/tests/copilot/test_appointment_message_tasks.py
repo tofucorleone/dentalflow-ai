@@ -150,7 +150,7 @@ def test_ignores_unrelated_appointment():
     assert actions == []
 
 
-def test_hides_confirmation_already_sent_by_automatic_copilot():
+def test_marks_confirmation_already_sent_as_completed():
     appointment_id = uuid4()
 
     now = datetime(
@@ -177,9 +177,21 @@ def test_hides_confirmation_already_sent_by_automatic_copilot():
         sent_confirmation_appointment_ids={
             appointment_id,
         },
+        confirmation_status_by_appointment={
+            appointment_id: "sent",
+        },
     )
 
-    assert actions == []
+    assert len(actions) == 1
+
+    action = actions[0]
+
+    assert action["id"] == f"confirmation:{appointment_id}"
+    assert action["type"] == "pending_confirmation"
+    assert action["appointment_id"] == appointment_id
+    assert action["status"] == "completed"
+    assert action["confirmation_status"] == "sent"
+    assert action["requires_validation"] is False
 
 
 def test_appointment_action_fields_reach_copilot_task():
@@ -214,6 +226,7 @@ def test_appointment_action_fields_reach_copilot_task():
     assert task["appointment_id"] == appointment_id
     assert task["type"] == "pending_confirmation"
     assert task["requires_validation"] is True
+    assert task["status"] == "open"
 
 
 class FakeCursor:
@@ -314,3 +327,50 @@ def test_does_not_hydrate_open_appointment_task():
 
     assert hydrated == tasks
     assert cur.executed == []
+
+
+def test_keeps_patient_confirmed_appointment_as_completed_task():
+    appointment_id = uuid4()
+
+    now = datetime(
+        2026, 8, 16, 10, 0,
+        tzinfo=TZ,
+    )
+
+    appointments = [
+        {
+            "id": appointment_id,
+            "patient_id": uuid4(),
+            "patient_name": "Patient confirmé",
+            "status": "confirmed",
+            "start_at": datetime(
+                2026, 8, 17, 14, 30,
+                tzinfo=TZ,
+            ),
+        }
+    ]
+
+    actions = build_appointment_message_actions(
+        appointments=appointments,
+        now=now,
+        sent_confirmation_appointment_ids={
+            appointment_id,
+        },
+        confirmation_status_by_appointment={
+            appointment_id: "confirmed",
+        },
+    )
+
+    assert len(actions) == 1
+
+    action = actions[0]
+
+    assert action["id"] == (
+        f"confirmation:{appointment_id}"
+    )
+    assert action["status"] == "completed"
+    assert (
+        action["confirmation_status"]
+        == "confirmed"
+    )
+    assert action["requires_validation"] is False

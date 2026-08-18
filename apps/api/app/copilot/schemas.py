@@ -273,6 +273,10 @@ class CopilotTask(BaseModel):
     assigned_user_id: UUID | None = None
     snoozed_until: datetime | None = None
     completed_at: datetime | None = None
+    confirmation_status: Literal[
+        "sent",
+        "confirmed",
+    ] | None = None
     requires_validation: bool = False
     actions: list[CopilotChatAction] = []
 
